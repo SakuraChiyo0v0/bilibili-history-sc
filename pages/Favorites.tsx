@@ -16,10 +16,16 @@ export const Favorites = () => {
   const pageSize = 50;
 
   const contentRef = useRef<HTMLDivElement>(null);
+  const selectedFolderIdRef = useRef<number | null>(null);
+  const resourceLoadRequestIdRef = useRef(0);
 
   useEffect(() => {
     loadFolders();
   }, []);
+
+  useEffect(() => {
+    selectedFolderIdRef.current = selectedFolderId;
+  }, [selectedFolderId]);
 
   useEffect(() => {
     if (selectedFolderId) {
@@ -42,9 +48,12 @@ export const Favorites = () => {
   };
 
   const loadResources = async (folderId: number) => {
+    const requestId = ++resourceLoadRequestIdRef.current;
     setLoading(true);
     try {
       const list = await getFavResources(folderId);
+      if (selectedFolderIdRef.current !== folderId) return;
+
       // Sort by index
       const sortedList = list.sort((a, b) => (a.index || 0) - (b.index || 0));
       setResources(sortedList);
@@ -53,7 +62,7 @@ export const Favorites = () => {
     } catch (error) {
       console.error("加载收藏资源失败", error);
     } finally {
-      setLoading(false);
+      if (requestId === resourceLoadRequestIdRef.current) setLoading(false);
     }
   };
 
@@ -111,7 +120,10 @@ export const Favorites = () => {
                   ? "bg-blue-50 dark:bg-blue-500/10 text-blue-600 dark:text-blue-400"
                   : "hover:bg-gray-100 dark:hover:bg-neutral-800"
               }`}
-              onClick={() => setSelectedFolderId(folder.id)}
+              onClick={() => {
+                selectedFolderIdRef.current = folder.id;
+                setSelectedFolderId(folder.id);
+              }}
             >
               <div className="font-medium truncate">{folder.title}</div>
               <div className="text-xs text-gray-400 dark:text-neutral-500 mt-1">

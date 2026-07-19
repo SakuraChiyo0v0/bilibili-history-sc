@@ -148,6 +148,14 @@ const WebDavSync = () => {
     if (!response?.success) throw new Error(response?.error || "同步全部合集视频失败");
   };
 
+  const syncAllFavoriteResources = async () => {
+    const response = await browser.runtime.sendMessage({
+      action: "syncFavorites",
+      forceFull: true,
+    });
+    if (!response?.success) throw new Error(response?.error || "同步全部收藏夹视频失败");
+  };
+
   // ===== WebDAV 备份 =====
 
   const handleBackup = async () => {
@@ -160,6 +168,9 @@ const WebDavSync = () => {
     setSyncProgress({ current: 0, total: 6, message: "准备备份数据..." });
 
     try {
+      setSyncProgress({ current: 0, total: 6, message: "正在同步全部收藏夹视频..." });
+      await syncAllFavoriteResources();
+
       setSyncProgress({ current: 0, total: 6, message: "正在同步全部合集视频..." });
       await syncAllSubscribedCollectionResources();
 
@@ -244,6 +255,9 @@ const WebDavSync = () => {
     setSyncProgress({ current: 0, total: 12, message: "准备双向同步..." });
 
     try {
+      setSyncProgress({ current: 0, total: 12, message: "正在同步全部收藏夹视频..." });
+      await syncAllFavoriteResources();
+
       setSyncProgress({ current: 0, total: 12, message: "正在同步全部合集视频..." });
       await syncAllSubscribedCollectionResources();
 
@@ -465,6 +479,7 @@ const WebDavSync = () => {
   const handleExportAll = async () => {
     setIsExporting(true);
     try {
+      await syncAllFavoriteResources();
       await syncAllSubscribedCollectionResources();
 
       const data = {
