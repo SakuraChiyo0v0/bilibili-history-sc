@@ -43,9 +43,8 @@
       ]
     },
     "condition": {
-      "domainType": "thirdParty",
       "urlFilter": "bilivideo.com",
-      "resourceTypes": ["xmlhttprequest", "media", "websocket", "script"],
+      "resourceTypes": ["xmlhttprequest", "media", "websocket", "script", "other"],
       "requestMethods": ["get"]
     }
   },

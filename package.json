@@ -27,6 +27,7 @@
     "react-dom": "^19.1.0",
     "react-hot-toast": "^2.5.2",
     "react-router-dom": "^7.6.0",
+    "shaka-player": "^5.2.1",
     "use-debounce": "^10.0.4",
     "zustand": "^5.0.5"
   },

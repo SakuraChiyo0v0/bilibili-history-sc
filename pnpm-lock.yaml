@@ -38,6 +38,9 @@ importers:
       react-router-dom:
         specifier: ^7.6.0
         version: 7.18.1(react-dom@19.2.7(react@19.2.7))(react@19.2.7)
+      shaka-player:
+        specifier: ^5.2.1
+        version: 5.2.1
       use-debounce:
         specifier: ^10.0.4
         version: 10.1.1(react@19.2.7)
@@ -1892,6 +1895,10 @@ packages:
   setimmediate@1.0.5:
     resolution: {integrity: sha512-MATJdZp8sLqDl/68LfQmbP8zKPLQNV6BIZoIgrscFDQ+RsvK/BxeDQOgyxKKoh0y/8h3BqVFnCqQ/gd+reiIXA==}
 
+  shaka-player@5.2.1:
+    resolution: {integrity: sha512-Sj8Kg94Ws8hUxzjHnC570o1jQcZwB7OxIwi25vLI3mOVmL8xpso3HyIqM7hjbgAhsOgdFojpJYwtcvR/t0a9vA==}
+    engines: {node: '>=18'}
+
   shell-quote@1.7.3:
     resolution: {integrity: sha512-Vpfqwm4EnqGdlsBFNmHhxhElJYrdfcxPThu+ryKS5J8L/fhAwLazFZtq+S+TWZ9ANj2piSQLGj6NQg+lKPmxrw==}
 
@@ -2149,6 +2156,7 @@ packages:
 
   uuid@8.3.2:
     resolution: {integrity: sha512-+NYs2QeMWy+GWFOEm9xnn6HCDp0l7QBD7ml8zLUmJ+93Q5NF0NocErnwkTkXVFNiX3/fpC6afS8Dhb/gz7R7eg==}
+    deprecated: uuid@10 and below is no longer supported.  For ESM codebases, update to uuid@latest.  For CommonJS codebases, use uuid@11 (but be aware this version will likely be deprecated in 2028).
     hasBin: true
 
   vite-node@6.0.0:
@@ -3911,6 +3919,8 @@ snapshots:
       is-primitive: 3.0.1
 
   setimmediate@1.0.5: {}
+
+  shaka-player@5.2.1: {}
 
   shell-quote@1.7.3: {}
 
