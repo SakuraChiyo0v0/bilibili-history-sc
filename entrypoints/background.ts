@@ -283,6 +283,12 @@ export default defineBackground(() => {
 
   const handleSyncFavorites = async (message: any, sendResponse: (response: any) => void) => {
     try {
+      if (message.forceFull) {
+        await syncAllFavoritesForBackup();
+        sendResponse({ success: true, message: "收藏夹全量同步成功" });
+        return;
+      }
+
       const isSyncing = await getStorageValue(IS_SYNCING_FAV);
       if (isSyncing) {
         sendResponse({ success: false, error: "收藏夹同步正在进行中" });
@@ -582,6 +588,7 @@ export default defineBackground(() => {
 
         let hasMore = true;
         let page = 1;
+        let completedFullSync = true;
         while (hasMore) {
           let res;
           let fetchSuccess = false;
@@ -612,12 +619,14 @@ export default defineBackground(() => {
 
           if (!res || !res.ok) {
             console.error(`获取收藏夹 ${folder.title} 彻底失败，跳过本页`);
+            completedFullSync = false;
             break;
           }
 
           const data = await res.json();
           if (data.code !== 0) {
             console.error(`获取收藏夹 ${folder.title} 资源失败:`, data.message);
+            completedFullSync = false;
             break;
           }
 
@@ -663,7 +672,7 @@ export default defineBackground(() => {
 
         // 4. 清理本地存在但线上已不存在的资源 (取消收藏的)
         // 仅全量同步时执行清理，增量同步只拉了第一页，无法准确判断哪些被取消收藏
-        if (isFullSync) {
+        if (isFullSync && completedFullSync) {
           try {
             const localResources = await getFavResources(folder.id);
             const idsToDelete = localResources
@@ -679,6 +688,8 @@ export default defineBackground(() => {
           } catch (err) {
             console.error(`清理收藏夹 "${folder.title}" 本地数据失败:`, err);
           }
+        } else if (isFullSync) {
+          console.warn(`收藏夹 "${folder.title}" 未完成全量同步，跳过本地删除以防数据丢失`);
         }
       }
 
@@ -690,6 +701,19 @@ export default defineBackground(() => {
     } catch (error) {
       console.error("同步收藏夹过程出错:", error);
       throw error;
+    }
+  }
+
+  async function syncAllFavoritesForBackup(): Promise<void> {
+    const isSyncing = await getStorageValue(IS_SYNCING_FAV);
+    if (isSyncing) throw new Error("收藏夹同步正在进行中");
+
+    await setStorageValue(IS_SYNCING_FAV, true);
+    try {
+      await syncFavorites(true);
+      await setStorageValue(HAS_FULL_FAV_SYNC, true);
+    } finally {
+      await setStorageValue(IS_SYNCING_FAV, false);
     }
   }
 
@@ -819,6 +843,12 @@ export default defineBackground(() => {
 
       console.log("开始 WebDAV 双向同步...");
       await ensureDirectory(config);
+
+      try {
+        await syncAllFavoritesForBackup();
+      } catch (error) {
+        console.warn("刷新收藏夹缓存失败，将继续同步已有本地数据:", error);
+      }
 
       try {
         await syncAllSubscribedCollectionResources();
