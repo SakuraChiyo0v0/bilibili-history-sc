@@ -141,6 +141,13 @@ const WebDavSync = () => {
     }
   };
 
+  const syncAllSubscribedCollectionResources = async () => {
+    const response = await browser.runtime.sendMessage({
+      action: "syncAllSubscribedCollectionResources",
+    });
+    if (!response?.success) throw new Error(response?.error || "同步全部合集视频失败");
+  };
+
   // ===== WebDAV 备份 =====
 
   const handleBackup = async () => {
@@ -153,6 +160,9 @@ const WebDavSync = () => {
     setSyncProgress({ current: 0, total: 6, message: "准备备份数据..." });
 
     try {
+      setSyncProgress({ current: 0, total: 6, message: "正在同步全部合集视频..." });
+      await syncAllSubscribedCollectionResources();
+
       // 确保远程目录存在
       await ensureDirectory(config);
 
@@ -234,6 +244,9 @@ const WebDavSync = () => {
     setSyncProgress({ current: 0, total: 12, message: "准备双向同步..." });
 
     try {
+      setSyncProgress({ current: 0, total: 12, message: "正在同步全部合集视频..." });
+      await syncAllSubscribedCollectionResources();
+
       await ensureDirectory(config);
 
       // 第一步：拉取远端数据并合并
@@ -452,6 +465,8 @@ const WebDavSync = () => {
   const handleExportAll = async () => {
     setIsExporting(true);
     try {
+      await syncAllSubscribedCollectionResources();
+
       const data = {
         exportTime: new Date().toISOString(),
         version: "1.0",
