@@ -228,6 +228,8 @@ export const BilibiliDashPlayer = ({
   const videoRef = useRef<HTMLVideoElement>(null);
   const audioRef = useRef<HTMLAudioElement>(null);
   const resumeTimeRef = useRef<number | null>(null);
+  const recoveryAttemptsRef = useRef(new Set<string>());
+  const currentPlaybackKeyRef = useRef("");
   const [error, setError] = useState("");
   const [isLoading, setIsLoading] = useState(true);
   const [streamLabel, setStreamLabel] = useState("");
@@ -239,6 +241,7 @@ export const BilibiliDashPlayer = ({
   const [volume, setVolume] = useState(1);
   const [isMuted, setIsMuted] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
+  const [playbackReloadVersion, setPlaybackReloadVersion] = useState(0);
 
   useEffect(() => {
     if (!nextBvid || nextBvid === bvid) return;
@@ -246,6 +249,13 @@ export const BilibiliDashPlayer = ({
       // 预取失败不影响当前视频播放，切换时仍会按正常流程请求。
     });
   }, [bvid, nextBvid]);
+
+  useEffect(() => {
+    const playbackKey = `${bvid}:${isMusicMode ? "audio" : "video"}`;
+    if (currentPlaybackKeyRef.current === playbackKey) return;
+    currentPlaybackKeyRef.current = playbackKey;
+    recoveryAttemptsRef.current.clear();
+  }, [bvid, isMusicMode]);
 
   useEffect(() => {
     const mediaElement = isMusicMode ? audioRef.current : videoRef.current;
@@ -288,13 +298,32 @@ export const BilibiliDashPlayer = ({
             bufferingGoal: 15,
             rebufferingGoal: 2,
             bufferBehind: 30,
+            retryParameters: {
+              maxAttempts: 3,
+              baseDelay: 500,
+              backoffFactor: 2,
+              fuzzFactor: 0.5,
+              timeout: 0,
+              stallTimeout: 5000,
+              connectionTimeout: 10000,
+            },
           },
         });
         player.getNetworkingEngine()?.registerRequestFilter((_type, request) => {
           request.allowCrossSiteCredentials = true;
         });
         player.addEventListener("error", (event) => {
-          const detail = (event as Event & { detail?: { code?: number; message?: string } }).detail;
+          const detail = (
+            event as Event & { detail?: { category?: number; code?: number; message?: string } }
+          ).detail;
+          const playbackKey = `${bvid}:${isMusicMode ? "audio" : "video"}`;
+          if (detail?.category === 1 && !recoveryAttemptsRef.current.has(playbackKey)) {
+            recoveryAttemptsRef.current.add(playbackKey);
+            resumeTimeRef.current = mediaElement.currentTime;
+            dashPlaybackCache.delete(bvid);
+            setPlaybackReloadVersion((version) => version + 1);
+            return;
+          }
           if (!disposed) {
             setError(detail?.message || `播放器错误 (${detail?.code || "未知"})`);
             setIsLoading(false);
@@ -332,7 +361,7 @@ export const BilibiliDashPlayer = ({
       void player?.destroy();
       if (manifestUrl) URL.revokeObjectURL(manifestUrl);
     };
-  }, [bvid, isMusicMode]);
+  }, [bvid, isMusicMode, playbackReloadVersion]);
 
   useEffect(() => {
     const handleFullscreenChange = () => {
