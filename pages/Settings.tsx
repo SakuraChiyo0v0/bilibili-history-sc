@@ -13,6 +13,7 @@ import {
   SYNC_PROGRESS_HISTORY,
   SYNC_PROGRESS_FAV,
   DATE_SELECTION_MODE,
+  VIDEO_CLICK_MODES,
 } from "../utils/constants";
 import {
   exportHistoryToCSV,
@@ -25,6 +26,13 @@ import { HistoryItem, LikedMusic } from "../utils/types";
 import { importLikedMusic } from "../utils/db";
 import { Checkbox } from "../components/Checkbox";
 import { Select } from "../components/Select";
+import {
+  DEFAULT_VIDEO_CLICK_MODES,
+  normalizeVideoClickModes,
+  VideoClickMode,
+  VideoClickModes,
+  VideoSource,
+} from "../hooks/useVideoClickMode";
 
 const Settings = () => {
   const [showConfirmDialog, setShowConfirmDialog] = useState(false);
@@ -34,6 +42,8 @@ const Settings = () => {
   const [isHideUserInfo, setIsHideUserInfo] = useState(false);
   const [hiddenMenus, setHiddenMenus] = useState<string[]>([]);
   const [dateSelectionMode, setDateSelectionMode] = useState<"range" | "single">("range");
+  const [videoClickModes, setVideoClickModes] =
+    useState<VideoClickModes>(DEFAULT_VIDEO_CLICK_MODES);
 
   // separate progress states
   const [historyProgress, setHistoryProgress] = useState<{
@@ -71,6 +81,10 @@ const Settings = () => {
       const storedSyncInterval = await getStorageValue(SYNC_INTERVAL, 1);
       const storedFavSyncInterval = await getStorageValue(FAV_SYNC_INTERVAL, 15);
       const storedDateMode = await getStorageValue(DATE_SELECTION_MODE, "range");
+      const storedVideoClickModes = await getStorageValue<Partial<VideoClickModes>>(
+        VIDEO_CLICK_MODES,
+        {},
+      );
 
       const histProg = await getStorageValue(SYNC_PROGRESS_HISTORY, null);
       const favProg = await getStorageValue(SYNC_PROGRESS_FAV, null);
@@ -83,6 +97,7 @@ const Settings = () => {
       setSyncInterval(storedSyncInterval);
       setFavSyncInterval(storedFavSyncInterval);
       setDateSelectionMode(storedDateMode as "range" | "single");
+      setVideoClickModes(normalizeVideoClickModes(storedVideoClickModes));
 
       setHistoryProgress(histProg);
       setFavProgress(favProg);
@@ -184,6 +199,12 @@ const Settings = () => {
     if (!isNaN(num) && num >= 1) {
       await setStorageValue(FAV_SYNC_INTERVAL, num);
     }
+  };
+
+  const handleVideoClickModeChange = async (source: VideoSource, mode: VideoClickMode) => {
+    const nextModes = { ...videoClickModes, [source]: mode };
+    setVideoClickModes(nextModes);
+    await setStorageValue(VIDEO_CLICK_MODES, nextModes);
   };
 
   const handleReset = async () => {
@@ -439,6 +460,40 @@ const Settings = () => {
                   </span>
                 </label>
               </div>
+            </div>
+
+            <div className="border-t border-gray-100 pt-4 dark:border-neutral-800">
+              <label className="text-sm font-medium text-gray-700 dark:text-neutral-300 block mb-1">
+                视频点击方式
+              </label>
+              <p className="text-xs text-gray-500 dark:text-neutral-400 mb-3">
+                可按来源决定点击视频后在哔哩哔哩打开，或在扩展内播放。
+              </p>
+              <div className="grid gap-3 sm:grid-cols-3">
+                {(
+                  [
+                    ["history", "历史记录"],
+                    ["favorites", "收藏夹"],
+                    ["collections", "合集"],
+                  ] as const
+                ).map(([source, label]) => (
+                  <Select
+                    key={source}
+                    label={label}
+                    value={videoClickModes[source]}
+                    onChange={(value) =>
+                      handleVideoClickModeChange(source, value as VideoClickMode)
+                    }
+                    options={[
+                      { value: "bilibili", label: "跳转哔哩哔哩" },
+                      { value: "player", label: "扩展内播放" },
+                    ]}
+                  />
+                ))}
+              </div>
+              <p className="text-xs text-gray-400 dark:text-neutral-500 mt-3">
+                历史记录中的番剧、直播和专栏等非普通视频会始终跳转至哔哩哔哩。
+              </p>
             </div>
           </div>
         </div>

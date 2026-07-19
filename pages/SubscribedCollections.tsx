@@ -4,6 +4,8 @@ import { getSubscribedCollectionResources, getSubscribedCollections } from "../u
 import { SubscribedCollection, SubscribedCollectionResource } from "../utils/types";
 import { ChevronDownIcon, LibraryBig, RefreshCw, Search, X } from "lucide-react";
 import { Pagination } from "../components/Pagination";
+import { BilibiliDashPlayer } from "../components/BilibiliDashPlayer";
+import { useVideoClickMode } from "../hooks/useVideoClickMode";
 
 type SearchType = "all" | "title" | "up" | "bvid" | "avid";
 
@@ -25,6 +27,8 @@ export const SubscribedCollections = () => {
   const [keyword, setKeyword] = useState("");
   const [searchType, setSearchType] = useState<SearchType>("all");
   const [isSearchKindDropdownOpen, setIsSearchKindDropdownOpen] = useState(false);
+  const [playingResource, setPlayingResource] = useState<SubscribedCollectionResource | null>(null);
+  const videoClickMode = useVideoClickMode("collections");
   const contentRef = useRef<HTMLDivElement>(null);
   const selectedCollectionIdRef = useRef<number | null>(null);
   const resourceSyncRequestIdRef = useRef(0);
@@ -299,6 +303,11 @@ export const SubscribedCollections = () => {
                         href={`https://www.bilibili.com/video/${item.bvid}`}
                         target="_blank"
                         rel="noopener noreferrer"
+                        onClick={(event) => {
+                          if (videoClickMode !== "player" || !item.bvid) return;
+                          event.preventDefault();
+                          setPlayingResource(item);
+                        }}
                         className="border border-gray-200 dark:border-neutral-800 rounded-lg overflow-hidden flex flex-col bg-white dark:bg-neutral-900 hover:shadow-md transition-shadow no-underline text-inherit"
                       >
                         <div className="relative w-full aspect-video bg-gray-100 dark:bg-neutral-800">
@@ -376,6 +385,14 @@ export const SubscribedCollections = () => {
           )}
         </div>
       </main>
+
+      {playingResource && (
+        <BilibiliDashPlayer
+          bvid={playingResource.bvid}
+          title={playingResource.title}
+          onClose={() => setPlayingResource(null)}
+        />
+      )}
     </div>
   );
 };

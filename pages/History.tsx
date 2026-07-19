@@ -7,6 +7,7 @@ import { RefreshCwIcon, ChevronDownIcon, Search, X, Filter, Minus, Plus } from "
 import { DATE_SELECTION_MODE, GRID_COLUMNS } from "../utils/constants";
 import { DateRangePicker } from "../components/DateRangePicker";
 import { getStorageValue, setStorageValue } from "../utils/storage";
+import { useVideoClickMode } from "../hooks/useVideoClickMode";
 
 export const History: React.FC = () => {
   const [history, setHistory] = useState<HistoryItemType[]>([]);
@@ -26,6 +27,7 @@ export const History: React.FC = () => {
   const [totalHistoryCount, setTotalHistoryCount] = useState(0);
   const [dateSelectionMode, setDateSelectionMode] = useState<"range" | "single">("range");
   const [gridColumns, setGridColumns] = useState(4);
+  const videoClickMode = useVideoClickMode("history");
 
   const loadMoreRef = useRef<HTMLDivElement>(null);
   const observerRef = useRef<IntersectionObserver | null>(null);
@@ -360,6 +362,7 @@ export const History: React.FC = () => {
           <HistoryItem
             key={`${item.id}-${item.view_at}`}
             item={item}
+            videoClickMode={videoClickMode}
             onDelete={() => {
               setHistory((prev) => prev.filter((i) => i.id !== item.id));
               setTotalHistoryCount((prev) => prev - 1);
