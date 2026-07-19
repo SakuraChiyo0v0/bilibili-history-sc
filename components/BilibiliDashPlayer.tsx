@@ -158,7 +158,12 @@ const fetchJsonWithRetry = async (url: string) => {
     try {
       const response = await fetch(url, { credentials: "include", cache: "no-store" });
       if (!response.ok) throw new Error(`请求失败 (${response.status})`);
-      return response.json();
+      const payload = await response.text();
+      try {
+        return JSON.parse(payload);
+      } catch {
+        throw new Error("B 站接口返回了非 JSON 内容，请稍后重试");
+      }
     } catch (error) {
       lastError = error;
       await new Promise((resolve) => setTimeout(resolve, 400 * (attempt + 1)));
@@ -272,7 +277,7 @@ export const BilibiliDashPlayer = ({
           throw new Error("当前浏览器不支持 DASH 播放");
         }
 
-        const player = new shaka.Player(mediaElement);
+        const player = new shaka.Player();
         player.configure({
           streaming: {
             bufferingGoal: 15,
@@ -292,6 +297,7 @@ export const BilibiliDashPlayer = ({
         player.getNetworkingEngine()?.registerRequestFilter((_type, request) => {
           request.allowCrossSiteCredentials = true;
         });
+        await player.attach(mediaElement);
 
         if (disposed) {
           await player.destroy();

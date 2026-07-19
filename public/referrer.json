@@ -188,7 +188,6 @@
       ]
     },
     "condition": {
-      "initiatorDomains": ["search.bilibili.com"],
       "urlFilter": "https://api.bilibili.com/x/web-interface/search",
       "resourceTypes": ["xmlhttprequest"],
       "requestMethods": ["get"]

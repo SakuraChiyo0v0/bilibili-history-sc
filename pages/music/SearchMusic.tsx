@@ -31,6 +31,20 @@ export interface SearchResultItem {
   [key: string]: any;
 }
 
+const getSearchUrl = (page: number, keyword: string) => {
+  const params = new URLSearchParams({
+    page: String(page),
+    page_size: "42",
+    platform: "pc",
+    highlight: "1",
+    keyword,
+    search_type: "video",
+    preload: "true",
+    com2co: "true",
+  });
+  return `https://api.bilibili.com/x/web-interface/search/type?${params}`;
+};
+
 const SearchMusic = () => {
   const [searchQuery, setSearchQuery] = useState("");
   const [searchResults, setSearchResults] = useState<SearchResultItem[]>([]);
@@ -207,10 +221,8 @@ const SearchMusic = () => {
     pageRef.current = 1;
 
     try {
-      // https://api.bilibili.com/x/web-interface/search/type?page=1&page_size=42&platform=pc&highlight=1&keyword=brave+heart&search_type=video&preload=true&com2co=true
-      const response = await fetch(
-        `https://api.bilibili.com/x/web-interface/search/type?page=${pageRef.current}&page_size=42&platform=pc&highlight=1&keyword=${searchQuery}&search_type=video&preload=true&com2co=true`,
-      );
+      const response = await fetch(getSearchUrl(pageRef.current, searchQuery));
+      if (!response.ok) throw new Error(`搜索请求失败 (${response.status})`);
       const {
         data: { result, next, numPages },
       } = await response.json();
@@ -235,9 +247,8 @@ const SearchMusic = () => {
     setError("");
 
     try {
-      const response = await fetch(
-        `https://api.bilibili.com/x/web-interface/search/type?page=${pageRef.current}&page_size=42&platform=pc&highlight=1&keyword=${searchQuery}&search_type=video&preload=true&com2co=true`,
-      );
+      const response = await fetch(getSearchUrl(pageRef.current, searchQuery));
+      if (!response.ok) throw new Error(`搜索请求失败 (${response.status})`);
       const {
         data: { result, next, numPages },
       } = await response.json();
