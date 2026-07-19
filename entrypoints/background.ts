@@ -894,7 +894,9 @@ export default defineBackground(() => {
       const data = await response.json();
       if (data.code !== 0) throw new Error(data.message || "获取订阅合集失败");
 
-      const list = data.data?.list || [];
+      const list = (data.data?.list || []).filter(
+        (item: any) => item.title !== "该合集已失效" || Number(item.upper?.mid) !== 0,
+      );
       total = Number(data.data?.count || 0);
       collections.push(
         ...list.map((item: any, index: number) => ({
@@ -918,7 +920,7 @@ export default defineBackground(() => {
     await replaceSubscribedCollections(collections);
   }
 
-  async function syncSubscribedCollectionResources(collectionId: number): Promise<void> {
+  async function syncSubscribedCollectionResources(collectionId: number): Promise<boolean> {
     const sessdata = await getBilibiliSession();
     const pageSize = 30;
     let page = 1;
@@ -927,7 +929,7 @@ export default defineBackground(() => {
 
     while (hasMore) {
       const response = await fetch(
-        `https://api.bilibili.com/x/space/fav/season/list?season_id=${collectionId}&pn=${page}&ps=${pageSize}`,
+        `https://api.bilibili.com/x/v3/fav/resource/list?media_id=${collectionId}&pn=${page}&ps=${pageSize}&platform=web`,
         {
           headers: {
             Cookie: `SESSDATA=${sessdata}`,
@@ -937,6 +939,10 @@ export default defineBackground(() => {
       if (!response.ok) throw new Error("获取合集内容失败");
 
       const data = await response.json();
+      if (data.code === -404) {
+        console.warn(`订阅合集 ${collectionId} 已失效或不可访问，跳过同步`);
+        return false;
+      }
       if (data.code !== 0) throw new Error(data.message || "获取合集内容失败");
 
       const medias = data.data?.medias || [];
@@ -961,6 +967,7 @@ export default defineBackground(() => {
     }
 
     await replaceSubscribedCollectionResources(collectionId, resources);
+    return true;
   }
 
   async function syncAllSubscribedCollectionResources(): Promise<void> {
