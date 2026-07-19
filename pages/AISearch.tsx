@@ -1,7 +1,14 @@
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect } from "react";
 import { Search, Loader2, KeyRound, Sparkles, Clock, Trash2, ChevronRight } from "lucide-react";
 import { getAllHistory } from "../utils/db";
-import { DASHSCOPE_API_KEY, AI_SEARCH_HISTORY } from "../utils/constants";
+import {
+  AI_SEARCH_CUSTOM_API_KEY,
+  AI_SEARCH_CUSTOM_BASE_URL,
+  AI_SEARCH_CUSTOM_MODEL,
+  AI_SEARCH_HISTORY,
+  AI_SEARCH_PROVIDER,
+  DASHSCOPE_API_KEY,
+} from "../utils/constants";
 import { getStorageValue, setStorageValue } from "../utils/storage";
 
 export interface AISearchRecord {
@@ -12,8 +19,22 @@ export interface AISearchRecord {
   timestamp: number;
 }
 
+type AIProvider = "dashscope" | "custom";
+
+const DASHSCOPE_CHAT_COMPLETIONS_URL =
+  "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions";
+
+const toChatCompletionsUrl = (baseUrl: string) => {
+  const normalizedBaseUrl = baseUrl.trim().replace(/\/+$/, "");
+  if (normalizedBaseUrl.endsWith("/chat/completions")) return normalizedBaseUrl;
+  return `${normalizedBaseUrl}/chat/completions`;
+};
+
 export const AISearch: React.FC = () => {
+  const [provider, setProvider] = useState<AIProvider>("dashscope");
   const [apiKey, setApiKey] = useState("");
+  const [customBaseUrl, setCustomBaseUrl] = useState("");
+  const [customModel, setCustomModel] = useState("");
   const [query, setQuery] = useState("");
   const [loading, setLoading] = useState(false);
 
@@ -26,22 +47,49 @@ export const AISearch: React.FC = () => {
   const [historyLogs, setHistoryLogs] = useState<AISearchRecord[]>([]);
 
   useEffect(() => {
-    getStorageValue(DASHSCOPE_API_KEY, "").then((key) => {
-      setApiKey(key as string);
-    });
-    getStorageValue(AI_SEARCH_HISTORY, []).then((logs) => {
+    const loadSettings = async () => {
+      const [savedProvider, dashscopeKey, savedCustomKey, savedBaseUrl, savedModel, logs] =
+        await Promise.all([
+          getStorageValue(AI_SEARCH_PROVIDER, "dashscope"),
+          getStorageValue(DASHSCOPE_API_KEY, ""),
+          getStorageValue(AI_SEARCH_CUSTOM_API_KEY, ""),
+          getStorageValue(AI_SEARCH_CUSTOM_BASE_URL, ""),
+          getStorageValue(AI_SEARCH_CUSTOM_MODEL, ""),
+          getStorageValue(AI_SEARCH_HISTORY, []),
+        ]);
+      const savedProviderValue: AIProvider = savedProvider === "custom" ? "custom" : "dashscope";
+      setProvider(savedProviderValue);
+      setApiKey((savedProviderValue === "dashscope" ? dashscopeKey : savedCustomKey) as string);
+      setCustomBaseUrl(savedBaseUrl as string);
+      setCustomModel(savedModel as string);
       setHistoryLogs(logs as AISearchRecord[]);
-    });
+    };
+
+    void loadSettings();
   }, []);
 
   const saveApiKey = (val: string) => {
     setApiKey(val);
-    setStorageValue(DASHSCOPE_API_KEY, val);
+    setStorageValue(provider === "dashscope" ? DASHSCOPE_API_KEY : AI_SEARCH_CUSTOM_API_KEY, val);
+  };
+
+  const changeProvider = async (value: AIProvider) => {
+    setProvider(value);
+    setStorageValue(AI_SEARCH_PROVIDER, value);
+    const key = await getStorageValue(
+      value === "dashscope" ? DASHSCOPE_API_KEY : AI_SEARCH_CUSTOM_API_KEY,
+      "",
+    );
+    setApiKey(key as string);
   };
 
   const startSearch = async () => {
-    if (!apiKey) {
-      alert("请先填写阿里云百炼 API Key");
+    if (!apiKey.trim()) {
+      alert(`请先填写${provider === "dashscope" ? "阿里云百炼" : "自定义接口"} API Key`);
+      return;
+    }
+    if (provider === "custom" && (!customBaseUrl.trim() || !customModel.trim())) {
+      alert("请填写自定义接口地址和模型名称");
       return;
     }
     if (!query.trim()) return;
@@ -76,27 +124,29 @@ export const AISearch: React.FC = () => {
 ${historyTextStr}
 `;
 
-      // 2. 调阿里云接口 SSE 流式读取
-      const res = await fetch(
-        "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
-        {
-          method: "POST",
-          headers: {
-            Authorization: `Bearer ${apiKey}`,
-            "Content-Type": "application/json",
-            Accept: "text/event-stream",
-          },
-          body: JSON.stringify({
-            model: "qwen3.5-plus",
-            messages: [
-              { role: "system", content: systemPrompt },
-              { role: "user", content: query },
-            ],
-            stream: true,
-            enable_thinking: true,
-          }),
+      // 2. 调用 OpenAI Chat Completions 兼容接口并读取 SSE 流
+      const endpoint =
+        provider === "dashscope"
+          ? DASHSCOPE_CHAT_COMPLETIONS_URL
+          : toChatCompletionsUrl(customBaseUrl);
+      const requestBody = {
+        model: provider === "dashscope" ? "qwen3.5-plus" : customModel.trim(),
+        messages: [
+          { role: "system", content: systemPrompt },
+          { role: "user", content: query },
+        ],
+        stream: true,
+        ...(provider === "dashscope" ? { enable_thinking: true } : {}),
+      };
+      const res = await fetch(endpoint, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          "Content-Type": "application/json",
+          Accept: "text/event-stream",
         },
-      );
+        body: JSON.stringify(requestBody),
+      });
 
       if (!res.ok) {
         throw new Error("HTTP " + res.status + ": " + (await res.text()));
@@ -128,9 +178,10 @@ ${historyTextStr}
 
                 if (delta) {
                   // 处理思考过程
-                  if (delta.reasoning_content) {
-                    finalReasoning += delta.reasoning_content;
-                    setReasoning((prev) => prev + delta.reasoning_content);
+                  const reasoningDelta = delta.reasoning_content ?? delta.reasoning;
+                  if (reasoningDelta) {
+                    finalReasoning += reasoningDelta;
+                    setReasoning((prev) => prev + reasoningDelta);
                   }
 
                   // 处理完整的回复
@@ -237,34 +288,68 @@ ${historyTextStr}
       </div>
 
       <div className="flex-1 flex flex-col h-screen overflow-hidden">
-        <div className="bg-white dark:bg-[#0a0a0a] border-b border-gray-200 dark:border-neutral-800 px-6 py-4 flex-shrink-0 flex items-center justify-between shadow-sm z-10">
-          <h1 className="text-xl font-bold flex items-center gap-2 text-gray-900 dark:text-neutral-100">
-            <Sparkles className="w-5 h-5 text-indigo-500" />
-            AI 语义搜索
-          </h1>
+        <div className="bg-white dark:bg-[#0a0a0a] border-b border-gray-200 dark:border-neutral-800 px-6 py-4 flex-shrink-0 shadow-sm z-10">
+          <div className="flex flex-col 2xl:flex-row 2xl:items-center justify-between gap-3">
+            <h1 className="text-xl font-bold flex items-center gap-2 text-gray-900 dark:text-neutral-100 whitespace-nowrap shrink-0">
+              <Sparkles className="w-5 h-5 text-indigo-500" />
+              AI 语义搜索
+            </h1>
 
-          <div className="flex items-center gap-3">
-            <div className="flex items-center bg-gray-50 dark:bg-neutral-900 border border-gray-200 dark:border-neutral-800 rounded-lg px-3 py-1.5 focus-within:ring-2 focus-within:ring-indigo-100 dark:focus-within:ring-indigo-500/20 focus-within:border-indigo-400 dark:focus-within:border-indigo-500 focus-within:bg-white dark:focus-within:bg-neutral-900 transition-all">
-              <KeyRound className="w-4 h-4 text-gray-400 dark:text-neutral-500 mr-2" />
+            <div className="flex items-center justify-end flex-wrap gap-3">
+              <select
+                value={provider}
+                onChange={(e) => void changeProvider(e.target.value as AIProvider)}
+                className="text-sm bg-gray-50 dark:bg-neutral-900 border border-gray-200 dark:border-neutral-800 rounded-lg py-1.5 px-2 outline-none text-gray-600 dark:text-neutral-200 focus:border-indigo-400 dark:focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100 dark:focus:ring-indigo-500/20"
+              >
+                <option value="dashscope">DashScope</option>
+                <option value="custom">自定义 OpenAI 兼容接口</option>
+              </select>
+              <div className="flex items-center bg-gray-50 dark:bg-neutral-900 border border-gray-200 dark:border-neutral-800 rounded-lg px-3 py-1.5 focus-within:ring-2 focus-within:ring-indigo-100 dark:focus-within:ring-indigo-500/20 focus-within:border-indigo-400 dark:focus-within:border-indigo-500 focus-within:bg-white dark:focus-within:bg-neutral-900 transition-all">
+                <KeyRound className="w-4 h-4 text-gray-400 dark:text-neutral-500 mr-2" />
+                <input
+                  type="password"
+                  className="bg-transparent border-none focus:ring-0 text-sm w-48 p-0 text-gray-700 dark:text-neutral-100 placeholder-gray-400 dark:placeholder-neutral-500 focus:outline-none"
+                  placeholder={provider === "dashscope" ? "DashScope API Key" : "自定义 API Key"}
+                  value={apiKey}
+                  onChange={(e) => saveApiKey(e.target.value)}
+                />
+              </div>
+              <select
+                value={searchCount}
+                onChange={(e) => setSearchCount(Number(e.target.value))}
+                className="text-sm bg-gray-50 dark:bg-neutral-900 border border-gray-200 dark:border-neutral-800 rounded-lg py-1.5 px-2 outline-none text-gray-600 dark:text-neutral-200 focus:border-indigo-400 dark:focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100 dark:focus:ring-indigo-500/20"
+              >
+                <option value={500}>最近 500 条</option>
+                <option value={1000}>最近 1000 条</option>
+                <option value={3000}>最近 3000 条</option>
+                <option value={5000}>最近 5000 条</option>
+              </select>
+            </div>
+          </div>
+          {provider === "custom" && (
+            <div className="mt-3 flex justify-end flex-wrap gap-3">
               <input
-                type="password"
-                className="bg-transparent border-none focus:ring-0 text-sm w-48 p-0 text-gray-700 dark:text-neutral-100 placeholder-gray-400 dark:placeholder-neutral-500 focus:outline-none"
-                placeholder="DashScope API Key"
-                value={apiKey}
-                onChange={(e) => saveApiKey(e.target.value)}
+                type="url"
+                className="bg-gray-50 dark:bg-neutral-900 border border-gray-200 dark:border-neutral-800 rounded-lg px-3 py-1.5 text-sm w-80 max-w-full text-gray-700 dark:text-neutral-100 placeholder-gray-400 dark:placeholder-neutral-500 focus:outline-none focus:ring-2 focus:ring-indigo-100 dark:focus:ring-indigo-500/20 focus:border-indigo-400 dark:focus:border-indigo-500"
+                placeholder="接口地址，例如 https://api.example.com/v1"
+                value={customBaseUrl}
+                onChange={(e) => {
+                  setCustomBaseUrl(e.target.value);
+                  void setStorageValue(AI_SEARCH_CUSTOM_BASE_URL, e.target.value);
+                }}
+              />
+              <input
+                type="text"
+                className="bg-gray-50 dark:bg-neutral-900 border border-gray-200 dark:border-neutral-800 rounded-lg px-3 py-1.5 text-sm w-48 max-w-full text-gray-700 dark:text-neutral-100 placeholder-gray-400 dark:placeholder-neutral-500 focus:outline-none focus:ring-2 focus:ring-indigo-100 dark:focus:ring-indigo-500/20 focus:border-indigo-400 dark:focus:border-indigo-500"
+                placeholder="模型名称"
+                value={customModel}
+                onChange={(e) => {
+                  setCustomModel(e.target.value);
+                  void setStorageValue(AI_SEARCH_CUSTOM_MODEL, e.target.value);
+                }}
               />
             </div>
-            <select
-              value={searchCount}
-              onChange={(e) => setSearchCount(Number(e.target.value))}
-              className="text-sm bg-gray-50 dark:bg-neutral-900 border border-gray-200 dark:border-neutral-800 rounded-lg py-1.5 px-2 outline-none text-gray-600 dark:text-neutral-200 focus:border-indigo-400 dark:focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100 dark:focus:ring-indigo-500/20"
-            >
-              <option value={500}>最近 500 条</option>
-              <option value={1000}>最近 1000 条</option>
-              <option value={3000}>最近 3000 条</option>
-              <option value={5000}>最近 5000 条</option>
-            </select>
-          </div>
+          )}
         </div>
 
         <div className="flex-1 overflow-y-auto p-6 flex flex-col items-center">
