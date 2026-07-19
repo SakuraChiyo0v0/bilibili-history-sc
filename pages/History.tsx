@@ -8,6 +8,7 @@ import { DATE_SELECTION_MODE, GRID_COLUMNS } from "../utils/constants";
 import { DateRangePicker } from "../components/DateRangePicker";
 import { getStorageValue, setStorageValue } from "../utils/storage";
 import { useVideoClickMode } from "../hooks/useVideoClickMode";
+import { BilibiliDashPlayer } from "../components/BilibiliDashPlayer";
 
 export const History: React.FC = () => {
   const [history, setHistory] = useState<HistoryItemType[]>([]);
@@ -27,6 +28,7 @@ export const History: React.FC = () => {
   const [totalHistoryCount, setTotalHistoryCount] = useState(0);
   const [dateSelectionMode, setDateSelectionMode] = useState<"range" | "single">("range");
   const [gridColumns, setGridColumns] = useState(4);
+  const [playingHistoryItem, setPlayingHistoryItem] = useState<HistoryItemType | null>(null);
   const videoClickMode = useVideoClickMode("history");
 
   const loadMoreRef = useRef<HTMLDivElement>(null);
@@ -166,6 +168,19 @@ export const History: React.FC = () => {
     }
     return isLoading ? "加载中..." : hasMore ? "向下滚动加载更多" : "没有更多了";
   };
+
+  const playableHistory = history.filter(
+    (item) => item.business === "archive" && Boolean(item.bvid),
+  );
+  const playingHistoryIndex = playingHistoryItem
+    ? playableHistory.findIndex(
+        (item) => item.id === playingHistoryItem.id && item.view_at === playingHistoryItem.view_at,
+      )
+    : -1;
+
+  useEffect(() => {
+    if (playingHistoryItem && playingHistoryIndex === -1) setPlayingHistoryItem(null);
+  }, [playingHistoryItem, playingHistoryIndex]);
 
   return (
     <div>
@@ -363,9 +378,11 @@ export const History: React.FC = () => {
             key={`${item.id}-${item.view_at}`}
             item={item}
             videoClickMode={videoClickMode}
+            onPlay={() => setPlayingHistoryItem(item)}
             onDelete={() => {
               setHistory((prev) => prev.filter((i) => i.id !== item.id));
               setTotalHistoryCount((prev) => prev - 1);
+              setPlayingHistoryItem((current) => (current?.id === item.id ? null : current));
             }}
           />
         ))}
@@ -402,6 +419,17 @@ export const History: React.FC = () => {
             </button>
           )}
         </div>
+      )}
+      {playingHistoryItem && playingHistoryIndex >= 0 && (
+        <BilibiliDashPlayer
+          bvid={playingHistoryItem.bvid}
+          title={playingHistoryItem.title}
+          onClose={() => setPlayingHistoryItem(null)}
+          hasPrevious={playingHistoryIndex > 0}
+          hasNext={playingHistoryIndex < playableHistory.length - 1}
+          onPrevious={() => setPlayingHistoryItem(playableHistory[playingHistoryIndex - 1])}
+          onNext={() => setPlayingHistoryItem(playableHistory[playingHistoryIndex + 1])}
+        />
       )}
     </div>
   );

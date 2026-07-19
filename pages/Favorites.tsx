@@ -104,6 +104,14 @@ export const Favorites = () => {
 
   const startIndex = (currentPage - 1) * pageSize;
   const currentResources = filteredResources.slice(startIndex, startIndex + pageSize);
+  const playableResources = filteredResources.filter((item) => Boolean(item.bvid));
+  const playingResourceIndex = playingResource
+    ? playableResources.findIndex((item) => item.id === playingResource.id)
+    : -1;
+
+  useEffect(() => {
+    if (playingResource && playingResourceIndex === -1) setPlayingResource(null);
+  }, [playingResource, playingResourceIndex]);
 
   return (
     <div className="flex h-screen bg-gray-50 dark:bg-[#0a0a0a]">
@@ -127,6 +135,7 @@ export const Favorites = () => {
               onClick={() => {
                 selectedFolderIdRef.current = folder.id;
                 setSelectedFolderId(folder.id);
+                setPlayingResource(null);
               }}
             >
               <div className="font-medium truncate">{folder.title}</div>
@@ -327,6 +336,10 @@ export const Favorites = () => {
           bvid={playingResource.bvid}
           title={playingResource.title}
           onClose={() => setPlayingResource(null)}
+          hasPrevious={playingResourceIndex > 0}
+          hasNext={playingResourceIndex < playableResources.length - 1}
+          onPrevious={() => setPlayingResource(playableResources[playingResourceIndex - 1])}
+          onNext={() => setPlayingResource(playableResources[playingResourceIndex + 1])}
         />
       )}
     </div>

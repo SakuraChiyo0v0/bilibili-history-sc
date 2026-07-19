@@ -8,12 +8,12 @@ import { toast } from "react-hot-toast";
 import { IS_SYNC_DELETE } from "../utils/constants";
 import { getTypeTag } from "../utils/common";
 import { VideoClickMode } from "../hooks/useVideoClickMode";
-import { BilibiliDashPlayer } from "./BilibiliDashPlayer";
 
 interface HistoryItemProps {
   item: HistoryItemType;
   onDelete?: () => void;
   videoClickMode: VideoClickMode;
+  onPlay: () => void;
 }
 
 const deleteBilibiliHistory = async (business: string, id: number): Promise<void> => {
@@ -60,9 +60,13 @@ const deleteBilibiliHistory = async (business: string, id: number): Promise<void
   }
 };
 
-export const HistoryItem: React.FC<HistoryItemProps> = ({ item, onDelete, videoClickMode }) => {
+export const HistoryItem: React.FC<HistoryItemProps> = ({
+  item,
+  onDelete,
+  videoClickMode,
+  onPlay,
+}) => {
   const [isFav, setIsFav] = useState(item.is_fav === true);
-  const [isPlayerOpen, setIsPlayerOpen] = useState(false);
 
   useEffect(() => {
     if (item.is_fav === true) return;
@@ -123,7 +127,7 @@ export const HistoryItem: React.FC<HistoryItemProps> = ({ item, onDelete, videoC
         onClick={(event) => {
           if (videoClickMode !== "player" || item.business !== "archive" || !item.bvid) return;
           event.preventDefault();
-          setIsPlayerOpen(true);
+          onPlay();
         }}
         className="no-underline text-inherit"
       >
@@ -206,13 +210,6 @@ export const HistoryItem: React.FC<HistoryItemProps> = ({ item, onDelete, videoC
           </div>
         </div>
       </a>
-      {isPlayerOpen && (
-        <BilibiliDashPlayer
-          bvid={item.bvid}
-          title={item.title}
-          onClose={() => setIsPlayerOpen(false)}
-        />
-      )}
     </div>
   );
 };
