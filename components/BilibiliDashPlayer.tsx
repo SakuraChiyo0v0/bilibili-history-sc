@@ -1,5 +1,18 @@
 import { useEffect, useRef, useState } from "react";
-import { ChevronLeft, ChevronRight, ExternalLink, Loader2, X } from "lucide-react";
+import {
+  ChevronLeft,
+  ChevronRight,
+  ExternalLink,
+  Loader2,
+  Maximize,
+  Minimize,
+  Music,
+  Pause,
+  Play,
+  Volume2,
+  VolumeX,
+  X,
+} from "lucide-react";
 import type Shaka from "shaka-player/dist/shaka-player.dash";
 
 interface DashSegmentBase {
@@ -103,15 +116,18 @@ const createAdaptationSet = (streams: DashStream[], type: "video" | "audio") => 
   return `<AdaptationSet contentType="${type}" mimeType="${type}/mp4" segmentAlignment="true" startWithSAP="1">${representations}</AdaptationSet>`;
 };
 
-const createManifest = (dash: {
-  video?: DashStream[];
-  audio?: DashStream[];
-  duration?: number;
-}) => {
+const createManifest = (
+  dash: {
+    video?: DashStream[];
+    audio?: DashStream[];
+    duration?: number;
+  },
+  audioOnly: boolean,
+) => {
   const duration = Number(dash.duration || 0);
-  const videoSet = createAdaptationSet(dash.video || [], "video");
+  const videoSet = audioOnly ? "" : createAdaptationSet(dash.video || [], "video");
   const audioSet = createAdaptationSet(dash.audio || [], "audio");
-  if (!duration || !videoSet || !audioSet) {
+  if (!duration || !audioSet || (!audioOnly && !videoSet)) {
     throw new Error("未找到浏览器可播放的 DASH 音视频流");
   }
 
@@ -134,6 +150,17 @@ const fetchJsonWithRetry = async (url: string, signal: AbortSignal) => {
   throw lastError instanceof Error ? lastError : new Error("网络请求失败");
 };
 
+const formatTime = (time: number) => {
+  if (!Number.isFinite(time) || time < 0) return "0:00";
+  const hours = Math.floor(time / 3600);
+  const minutes = Math.floor((time % 3600) / 60);
+  const seconds = Math.floor(time % 60);
+  const shortTime = `${minutes.toString().padStart(hours ? 2 : 1, "0")}:${seconds
+    .toString()
+    .padStart(2, "0")}`;
+  return hours ? `${hours}:${shortTime}` : shortTime;
+};
+
 export const BilibiliDashPlayer = ({
   bvid,
   title,
@@ -143,19 +170,37 @@ export const BilibiliDashPlayer = ({
   hasPrevious = false,
   hasNext = false,
 }: BilibiliDashPlayerProps) => {
+  const playerContainerRef = useRef<HTMLDivElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
+  const audioRef = useRef<HTMLAudioElement>(null);
+  const resumeTimeRef = useRef<number | null>(null);
   const [error, setError] = useState("");
   const [isLoading, setIsLoading] = useState(true);
   const [streamLabel, setStreamLabel] = useState("");
+  const [cover, setCover] = useState("");
+  const [isMusicMode, setIsMusicMode] = useState(false);
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [currentTime, setCurrentTime] = useState(0);
+  const [duration, setDuration] = useState(0);
+  const [volume, setVolume] = useState(1);
+  const [isMuted, setIsMuted] = useState(false);
+  const [isFullscreen, setIsFullscreen] = useState(false);
 
   useEffect(() => {
-    if (!videoRef.current || !bvid) return;
+    const mediaElement = isMusicMode ? audioRef.current : videoRef.current;
+    if (!mediaElement || !bvid) return;
 
     setError("");
     setIsLoading(true);
     setStreamLabel("");
 
-    const videoElement = videoRef.current;
+    const resumeTime = resumeTimeRef.current;
+    resumeTimeRef.current = null;
+    setIsPlaying(false);
+    setCurrentTime(resumeTime || 0);
+    setDuration(0);
+    mediaElement.volume = volume;
+    mediaElement.muted = isMuted;
     const controller = new AbortController();
     let manifestUrl = "";
     let player: InstanceType<typeof Shaka.Player> | null = null;
@@ -176,6 +221,7 @@ export const BilibiliDashPlayer = ({
         if (viewResult.code !== 0 || !viewResult.data?.cid) {
           throw new Error(viewResult.message || "获取视频信息失败");
         }
+        setCover(viewResult.data.pic || "");
 
         const playResult = await fetchJsonWithRetry(
           `https://api.bilibili.com/x/player/playurl?fnval=16&bvid=${encodeURIComponent(bvid)}&cid=${viewResult.data.cid}`,
@@ -185,11 +231,11 @@ export const BilibiliDashPlayer = ({
           throw new Error(playResult.message || "获取 DASH 播放地址失败");
         }
 
-        const manifest = createManifest(playResult.data.dash);
+        const manifest = createManifest(playResult.data.dash, isMusicMode);
         manifestUrl = URL.createObjectURL(new Blob([manifest], { type: "application/dash+xml" }));
         if (disposed) return;
 
-        player = new shaka.Player(videoElement);
+        player = new shaka.Player(mediaElement);
         player.configure({
           streaming: {
             bufferingGoal: 15,
@@ -208,17 +254,19 @@ export const BilibiliDashPlayer = ({
           }
         });
 
-        await player.load(manifestUrl);
+        await player.load(manifestUrl, resumeTime ?? undefined);
         if (disposed) return;
 
         const activeTrack = player.getVariantTracks().find((track) => track.active);
         if (activeTrack) {
           setStreamLabel(
-            `${activeTrack.width || "?"}×${activeTrack.height || "?"} · ${Math.round((activeTrack.bandwidth || 0) / 1000)} kbps`,
+            isMusicMode
+              ? `音乐模式 · ${Math.round((activeTrack.bandwidth || 0) / 1000)} kbps`
+              : `${activeTrack.width || "?"}×${activeTrack.height || "?"} · ${Math.round((activeTrack.bandwidth || 0) / 1000)} kbps`,
           );
         }
         setIsLoading(false);
-        videoElement.play().catch(() => {
+        mediaElement.play().catch(() => {
           // 浏览器可能要求用户再次点击播放控件，不影响已加载的视频。
         });
       } catch (loadError) {
@@ -234,15 +282,75 @@ export const BilibiliDashPlayer = ({
     return () => {
       disposed = true;
       controller.abort();
-      videoElement.pause();
+      mediaElement.pause();
       void player?.destroy();
       if (manifestUrl) URL.revokeObjectURL(manifestUrl);
     };
-  }, [bvid]);
+  }, [bvid, isMusicMode]);
+
+  useEffect(() => {
+    const handleFullscreenChange = () => {
+      setIsFullscreen(document.fullscreenElement === playerContainerRef.current);
+    };
+
+    document.addEventListener("fullscreenchange", handleFullscreenChange);
+    return () => document.removeEventListener("fullscreenchange", handleFullscreenChange);
+  }, []);
+
+  const toggleMusicMode = () => {
+    resumeTimeRef.current = (isMusicMode ? audioRef.current : videoRef.current)?.currentTime || 0;
+    setIsMusicMode((current) => !current);
+  };
+
+  const getMediaElement = () => (isMusicMode ? audioRef.current : videoRef.current);
+
+  const togglePlayback = () => {
+    const mediaElement = getMediaElement();
+    if (!mediaElement) return;
+    if (mediaElement.paused) {
+      void mediaElement.play();
+    } else {
+      mediaElement.pause();
+    }
+  };
+
+  const seekTo = (time: number) => {
+    const mediaElement = getMediaElement();
+    if (!mediaElement) return;
+    mediaElement.currentTime = time;
+    setCurrentTime(time);
+  };
+
+  const setMediaVolume = (nextVolume: number) => {
+    const mediaElement = getMediaElement();
+    if (!mediaElement) return;
+    mediaElement.volume = nextVolume;
+    mediaElement.muted = nextVolume === 0;
+    setVolume(nextVolume);
+    setIsMuted(nextVolume === 0);
+  };
+
+  const toggleMute = () => {
+    const mediaElement = getMediaElement();
+    if (!mediaElement) return;
+    mediaElement.muted = !mediaElement.muted;
+    setIsMuted(mediaElement.muted);
+  };
+
+  const toggleFullscreen = async () => {
+    if (document.fullscreenElement) {
+      await document.exitFullscreen();
+    } else {
+      await playerContainerRef.current?.requestFullscreen();
+    }
+  };
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
-      <div className="w-full max-w-5xl overflow-hidden rounded-xl bg-white shadow-2xl dark:bg-neutral-900">
+      <div
+        ref={playerContainerRef}
+        className="w-full max-w-5xl overflow-hidden rounded-xl bg-white shadow-2xl dark:bg-neutral-900"
+      >
         <div className="flex items-center justify-between gap-4 border-b border-gray-100 px-5 py-4 dark:border-neutral-800">
           <div className="min-w-0">
             <h2 className="truncate text-base font-semibold">{title}</h2>
@@ -269,6 +377,19 @@ export const BilibiliDashPlayer = ({
             >
               <ChevronRight className="h-5 w-5" />
             </button>
+            <button
+              type="button"
+              onClick={toggleMusicMode}
+              className={`rounded-md p-2 transition-colors ${
+                isMusicMode
+                  ? "bg-pink-50 text-pink-500 dark:bg-pink-500/15 dark:text-pink-300"
+                  : "text-gray-500 hover:bg-gray-100 hover:text-pink-500 dark:text-neutral-400 dark:hover:bg-neutral-800"
+              }`}
+              title={isMusicMode ? "切换为视频模式" : "音乐模式"}
+              aria-label={isMusicMode ? "切换为视频模式" : "音乐模式"}
+            >
+              <Music className="h-5 w-5" />
+            </button>
             <a
               href={`https://www.bilibili.com/video/${bvid}`}
               target="_blank"
@@ -290,15 +411,112 @@ export const BilibiliDashPlayer = ({
         </div>
 
         <div className="relative aspect-video bg-black">
-          <video
-            ref={videoRef}
-            controls
-            playsInline
-            onEnded={() => {
-              if (hasNext) onNext?.();
-            }}
-            className="h-full w-full"
-          />
+          {isMusicMode ? (
+            <div className="relative flex h-full w-full items-center justify-center overflow-hidden bg-neutral-950">
+              {cover ? (
+                <img
+                  src={`${cover.replace("http:", "https:")}@960w_540h_1c.avif`}
+                  alt={title}
+                  className="h-full w-full object-cover opacity-75"
+                />
+              ) : (
+                <Music className="h-16 w-16 text-white/60" />
+              )}
+              <div className="absolute inset-0 bg-black/20" />
+              <audio
+                ref={audioRef}
+                onLoadedMetadata={(event) => setDuration(event.currentTarget.duration)}
+                onTimeUpdate={(event) => setCurrentTime(event.currentTarget.currentTime)}
+                onPlay={() => setIsPlaying(true)}
+                onPause={() => setIsPlaying(false)}
+                onVolumeChange={(event) => {
+                  setVolume(event.currentTarget.volume);
+                  setIsMuted(event.currentTarget.muted);
+                }}
+                onEnded={() => {
+                  if (hasNext) onNext?.();
+                }}
+                className="sr-only"
+              />
+            </div>
+          ) : (
+            <video
+              ref={videoRef}
+              playsInline
+              onLoadedMetadata={(event) => setDuration(event.currentTarget.duration)}
+              onTimeUpdate={(event) => setCurrentTime(event.currentTarget.currentTime)}
+              onPlay={() => setIsPlaying(true)}
+              onPause={() => setIsPlaying(false)}
+              onVolumeChange={(event) => {
+                setVolume(event.currentTarget.volume);
+                setIsMuted(event.currentTarget.muted);
+              }}
+              onEnded={() => {
+                if (hasNext) onNext?.();
+              }}
+              className="h-full w-full"
+            />
+          )}
+          <div className="absolute inset-x-0 bottom-0 z-10 bg-gradient-to-t from-black/85 via-black/50 to-transparent px-5 pb-4 pt-10 text-white">
+            <div className="flex items-center gap-3">
+              <button
+                type="button"
+                onClick={togglePlayback}
+                disabled={isLoading || Boolean(error)}
+                className="rounded-full p-1.5 transition-colors hover:bg-white/15 disabled:cursor-not-allowed disabled:opacity-40"
+                title={isPlaying ? "暂停" : "播放"}
+                aria-label={isPlaying ? "暂停" : "播放"}
+              >
+                {isPlaying ? <Pause className="h-5 w-5" /> : <Play className="h-5 w-5" />}
+              </button>
+              <span className="w-20 shrink-0 text-center font-mono text-xs tabular-nums">
+                {formatTime(currentTime)} / {formatTime(duration)}
+              </span>
+              <input
+                type="range"
+                min="0"
+                max={duration || 0}
+                step="0.1"
+                value={Math.min(currentTime, duration || 0)}
+                onChange={(event) => seekTo(Number(event.target.value))}
+                disabled={!duration || isLoading || Boolean(error)}
+                aria-label="播放进度"
+                className="h-1 min-w-0 flex-1 cursor-pointer accent-pink-500 disabled:cursor-not-allowed disabled:opacity-40"
+              />
+              <button
+                type="button"
+                onClick={toggleMute}
+                className="rounded-full p-1.5 transition-colors hover:bg-white/15"
+                title={isMuted || volume === 0 ? "取消静音" : "静音"}
+                aria-label={isMuted || volume === 0 ? "取消静音" : "静音"}
+              >
+                {isMuted || volume === 0 ? (
+                  <VolumeX className="h-5 w-5" />
+                ) : (
+                  <Volume2 className="h-5 w-5" />
+                )}
+              </button>
+              <input
+                type="range"
+                min="0"
+                max="1"
+                step="0.05"
+                value={isMuted ? 0 : volume}
+                onChange={(event) => setMediaVolume(Number(event.target.value))}
+                aria-label="音量"
+                className="h-1 w-20 cursor-pointer accent-pink-500"
+              />
+              <button
+                type="button"
+                onClick={() => void toggleFullscreen()}
+                className="rounded-full p-1.5 transition-colors hover:bg-white/15"
+                title={isFullscreen ? "退出全屏" : "全屏"}
+                aria-label={isFullscreen ? "退出全屏" : "全屏"}
+              >
+                {isFullscreen ? <Minimize className="h-5 w-5" /> : <Maximize className="h-5 w-5" />}
+              </button>
+            </div>
+          </div>
           {isLoading && !error && (
             <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-black/50 text-sm text-white">
               <Loader2 className="h-7 w-7 animate-spin" />
