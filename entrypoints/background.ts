@@ -929,22 +929,50 @@ export default defineBackground(() => {
     const resources: SubscribedCollectionResource[] = [];
 
     while (hasMore) {
-      const response = await fetch(
-        `https://api.bilibili.com/x/v3/fav/resource/list?media_id=${collectionId}&pn=${page}&ps=${pageSize}&platform=web`,
+      const endpoints = [
         {
-          headers: {
-            Cookie: `SESSDATA=${sessdata}`,
-          },
+          name: "收藏夹",
+          url: `https://api.bilibili.com/x/v3/fav/resource/list?media_id=${collectionId}&pn=${page}&ps=${pageSize}&platform=web`,
         },
-      );
-      if (!response.ok) throw new Error("获取合集内容失败");
+        {
+          name: "合集",
+          url: `https://api.bilibili.com/x/space/fav/season/list?season_id=${collectionId}&pn=${page}&ps=${pageSize}`,
+        },
+      ];
+      const errors: string[] = [];
+      let isNotFound = true;
+      let data: any = null;
 
-      const data = await response.json();
-      if (data.code === -404) {
+      for (const endpoint of endpoints) {
+        try {
+          const response = await fetch(endpoint.url, {
+            headers: { Cookie: `SESSDATA=${sessdata}` },
+          });
+          if (!response.ok) {
+            errors.push(`${endpoint.name}接口 HTTP ${response.status}`);
+            isNotFound &&= response.status === 404;
+            continue;
+          }
+
+          const result = await response.json();
+          if (result.code === 0) {
+            data = result;
+            break;
+          }
+
+          errors.push(`${endpoint.name}接口 ${result.code}: ${result.message || "未知错误"}`);
+          isNotFound &&= result.code === -404 || result.code === 11010;
+        } catch (error) {
+          errors.push(`${endpoint.name}接口请求失败: ${error instanceof Error ? error.message : "未知错误"}`);
+          isNotFound = false;
+        }
+      }
+
+      if (!data && isNotFound) {
         console.warn(`订阅合集 ${collectionId} 已失效或不可访问，跳过同步`);
         return false;
       }
-      if (data.code !== 0) throw new Error(data.message || "获取合集内容失败");
+      if (!data) throw new Error(`获取合集内容失败（${errors.join("；")}）`);
 
       const medias = data.data?.medias || [];
       resources.push(
