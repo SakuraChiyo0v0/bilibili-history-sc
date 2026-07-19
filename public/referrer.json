@@ -192,5 +192,29 @@
       "resourceTypes": ["xmlhttprequest"],
       "requestMethods": ["get"]
     }
+  },
+  {
+    "id": 9,
+    "priority": 4,
+    "action": {
+      "type": "modifyHeaders",
+      "requestHeaders": [
+        {
+          "header": "origin",
+          "operation": "set",
+          "value": "https://www.bilibili.com"
+        },
+        {
+          "header": "referer",
+          "operation": "set",
+          "value": "https://www.bilibili.com/"
+        }
+      ]
+    },
+    "condition": {
+      "urlFilter": "https://api.bilibili.com/x/v3/fav/",
+      "resourceTypes": ["xmlhttprequest"],
+      "requestMethods": ["post"]
+    }
   }
 ]

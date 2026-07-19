@@ -2,10 +2,12 @@ import { useEffect, useRef, useState } from "react";
 import toast from "react-hot-toast";
 import { getSubscribedCollectionResources, getSubscribedCollections } from "../utils/db";
 import { SubscribedCollection, SubscribedCollectionResource } from "../utils/types";
-import { ChevronDownIcon, LibraryBig, RefreshCw, Search, X } from "lucide-react";
+import { ChevronDownIcon, LibraryBig, RefreshCw, Search, Trash2, X } from "lucide-react";
 import { Pagination } from "../components/Pagination";
 import { BilibiliDashPlayer } from "../components/BilibiliDashPlayer";
 import { useVideoClickMode } from "../hooks/useVideoClickMode";
+import { ContextMenu } from "../components/ContextMenu";
+import { ActionDialog } from "../components/ActionDialog";
 
 type SearchType = "all" | "title" | "up" | "bvid" | "avid";
 
@@ -28,6 +30,15 @@ export const SubscribedCollections = () => {
   const [searchType, setSearchType] = useState<SearchType>("all");
   const [isSearchKindDropdownOpen, setIsSearchKindDropdownOpen] = useState(false);
   const [playingResource, setPlayingResource] = useState<SubscribedCollectionResource | null>(null);
+  const [contextMenu, setContextMenu] = useState<{
+    x: number;
+    y: number;
+    collection: SubscribedCollection;
+  } | null>(null);
+  const [collectionToUnsubscribe, setCollectionToUnsubscribe] = useState<SubscribedCollection | null>(
+    null,
+  );
+  const [isUnsubscribing, setIsUnsubscribing] = useState(false);
   const videoClickMode = useVideoClickMode("collections");
   const contentRef = useRef<HTMLDivElement>(null);
   const selectedCollectionIdRef = useRef<number | null>(null);
@@ -86,6 +97,36 @@ export const SubscribedCollections = () => {
       toast.error(error instanceof Error ? error.message : "同步合集内容失败");
     } finally {
       if (requestId === resourceSyncRequestIdRef.current) setIsSyncingResources(false);
+    }
+  };
+
+  const unsubscribeCollection = async () => {
+    if (!collectionToUnsubscribe) return;
+    setIsUnsubscribing(true);
+    try {
+      const response = await browser.runtime.sendMessage({
+        action: "unsubscribeCollection",
+        collectionId: collectionToUnsubscribe.id,
+      });
+      if (!response?.success) throw new Error(response?.error || "取消订阅失败");
+
+      const remainingCollections = collections.filter(
+        (collection) => collection.id !== collectionToUnsubscribe.id,
+      );
+      setCollections(remainingCollections);
+      setSelectedCollectionId((currentId) =>
+        currentId === collectionToUnsubscribe.id ? (remainingCollections[0]?.id ?? null) : currentId,
+      );
+      if (selectedCollectionId === collectionToUnsubscribe.id) {
+        setResources([]);
+        setPlayingResource(null);
+      }
+      toast.success("已取消订阅合集");
+      setCollectionToUnsubscribe(null);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "取消订阅失败");
+    } finally {
+      setIsUnsubscribing(false);
     }
   };
 
@@ -172,6 +213,10 @@ export const SubscribedCollections = () => {
                 selectedCollectionIdRef.current = collection.id;
                 setSelectedCollectionId(collection.id);
                 setPlayingResource(null);
+              }}
+              onContextMenu={(event) => {
+                event.preventDefault();
+                setContextMenu({ x: event.clientX, y: event.clientY, collection });
               }}
               className={`w-full p-3 rounded-lg text-left mb-1 transition-colors ${
                 selectedCollectionId === collection.id
@@ -407,6 +452,32 @@ export const SubscribedCollections = () => {
           onNext={() => setPlayingResource(playableResources[playingResourceIndex + 1])}
         />
       )}
+      <ContextMenu
+        position={contextMenu ? { x: contextMenu.x, y: contextMenu.y } : null}
+        onClose={() => setContextMenu(null)}
+        items={
+          contextMenu
+            ? [
+                {
+                  label: "取消订阅合集",
+                  icon: <Trash2 className="h-4 w-4" />,
+                  danger: true,
+                  onSelect: () => setCollectionToUnsubscribe(contextMenu.collection),
+                },
+              ]
+            : []
+        }
+      />
+      <ActionDialog
+        isOpen={Boolean(collectionToUnsubscribe)}
+        title="取消订阅合集"
+        description={`确定取消订阅“${collectionToUnsubscribe?.title || ""}”吗？这只会从你的订阅列表中移除，不会影响作者的合集或其中的视频。`}
+        confirmLabel="确认取消订阅"
+        isDanger
+        isSubmitting={isUnsubscribing}
+        onClose={() => setCollectionToUnsubscribe(null)}
+        onConfirm={unsubscribeCollection}
+      />
     </div>
   );
 };

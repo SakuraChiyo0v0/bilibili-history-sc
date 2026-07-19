@@ -25,6 +25,9 @@ import {
   saveFavResources,
   getFavResources,
   deleteFavResources,
+  deleteFavFolder,
+  deleteFavResource,
+  moveFavResource,
   getAllHistory,
   getAllLikedMusic,
   getAllFavFolders,
@@ -39,6 +42,7 @@ import {
   smartMergeSubscribedCollectionResources,
   replaceSubscribedCollections,
   replaceSubscribedCollectionResources,
+  deleteSubscribedCollection,
 } from "../utils/db";
 import { getStorageValue, setStorageValue } from "../utils/storage";
 import { WebDavConfig, ensureDirectory, uploadFile, downloadFile } from "../utils/webdav";
@@ -384,6 +388,127 @@ export default defineBackground(() => {
     }
   };
 
+  const postBilibiliForm = async (path: string, values: Record<string, string | number>) => {
+    const cookies = await browser.cookies.getAll({ domain: "bilibili.com" });
+    const sessdata = cookies.find((cookie) => cookie.name === "SESSDATA")?.value;
+    const csrf = cookies.find((cookie) => cookie.name === "bili_jct")?.value;
+    if (!sessdata || !csrf) throw new Error("请先登录 B 站后再操作");
+
+    const body = new URLSearchParams({
+      ...Object.fromEntries(Object.entries(values).map(([key, value]) => [key, String(value)])),
+      csrf,
+    });
+    const response = await fetch(`https://api.bilibili.com${path}`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded",
+        Cookie: `SESSDATA=${sessdata}; bili_jct=${csrf}`,
+      },
+      body,
+    });
+    if (!response.ok) throw new Error(`请求失败（${response.status}）`);
+
+    const data = await response.json();
+    if (data.code !== 0) throw new Error(data.message || "B 站未完成此操作");
+  };
+
+  const handleEditFavFolder = async (message: any, sendResponse: (response: any) => void) => {
+    try {
+      const folderId = Number(message.folderId);
+      const title = String(message.title || "").trim();
+      if (!Number.isFinite(folderId) || !title) throw new Error("收藏夹名称不能为空");
+      await postBilibiliForm("/x/v3/fav/folder/edit", { media_id: folderId, title });
+      sendResponse({ success: true });
+    } catch (error) {
+      sendResponse({ success: false, error: error instanceof Error ? error.message : "修改收藏夹失败" });
+    }
+  };
+
+  const handleDeleteFavFolder = async (message: any, sendResponse: (response: any) => void) => {
+    try {
+      const folderId = Number(message.folderId);
+      if (!Number.isFinite(folderId)) throw new Error("收藏夹信息不完整");
+      await postBilibiliForm("/x/v3/fav/folder/del", { media_ids: folderId });
+      await deleteFavFolder(folderId);
+      sendResponse({ success: true });
+    } catch (error) {
+      sendResponse({ success: false, error: error instanceof Error ? error.message : "删除收藏夹失败" });
+    }
+  };
+
+  const handleDeleteFavResource = async (message: any, sendResponse: (response: any) => void) => {
+    try {
+      const folderId = Number(message.folderId);
+      const resourceId = Number(message.resourceId);
+      const resourceType = Number(message.resourceType);
+      if (!Number.isFinite(folderId) || !Number.isFinite(resourceId) || !Number.isFinite(resourceType)) {
+        throw new Error("收藏内容信息不完整");
+      }
+      await postBilibiliForm("/x/v3/fav/resource/batch-del", {
+        media_id: folderId,
+        resources: `${resourceId}:${resourceType}`,
+        platform: "web",
+      });
+      await deleteFavResource(folderId, resourceId);
+      sendResponse({ success: true });
+    } catch (error) {
+      sendResponse({ success: false, error: error instanceof Error ? error.message : "移出收藏夹失败" });
+    }
+  };
+
+  const handleMoveFavResource = async (
+    message: any,
+    sendResponse: (response: any) => void,
+  ) => {
+    try {
+      const sourceFolderId = Number(message.sourceFolderId);
+      const targetFolderId = Number(message.targetFolderId);
+      const resourceId = Number(message.resourceId);
+      const resourceType = Number(message.resourceType);
+      if (
+        !Number.isFinite(sourceFolderId) ||
+        !Number.isFinite(targetFolderId) ||
+        sourceFolderId === targetFolderId ||
+        !Number.isFinite(resourceId) ||
+        !Number.isFinite(resourceType)
+      ) {
+        throw new Error("收藏内容或目标收藏夹信息不完整");
+      }
+
+      const sessdata = await getBilibiliSession();
+      const mid = await getCurrentBilibiliMid(sessdata);
+      await postBilibiliForm("/x/v3/fav/resource/move", {
+        src_media_id: sourceFolderId,
+        tar_media_id: targetFolderId,
+        mid,
+        resources: `${resourceId}:${resourceType}`,
+        platform: "web",
+      });
+      await moveFavResource(sourceFolderId, targetFolderId, resourceId);
+      sendResponse({ success: true });
+    } catch (error) {
+      sendResponse({
+        success: false,
+        error: error instanceof Error ? error.message : "移动收藏内容失败",
+      });
+    }
+  };
+
+  const handleUnsubscribeCollection = async (
+    message: any,
+    sendResponse: (response: any) => void,
+  ) => {
+    try {
+      const collectionId = Number(message.collectionId);
+      if (!Number.isFinite(collectionId)) throw new Error("合集信息不完整");
+      await postBilibiliForm("/x/v3/fav/folder/del", { media_ids: collectionId });
+      await deleteSubscribedCollection(collectionId);
+      sendResponse({ success: true });
+    } catch (error) {
+      sendResponse({ success: false, error: error instanceof Error ? error.message : "取消订阅失败" });
+    }
+  };
+
   browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (message.action === "syncHistory") {
       handleSyncHistory(message, sendResponse);
@@ -395,6 +520,21 @@ export default defineBackground(() => {
       return true;
     } else if (message.action === "deleteHistoryItem") {
       handleDeleteHistoryItem(message, sendResponse);
+      return true;
+    } else if (message.action === "editFavFolder") {
+      handleEditFavFolder(message, sendResponse);
+      return true;
+    } else if (message.action === "deleteFavFolder") {
+      handleDeleteFavFolder(message, sendResponse);
+      return true;
+    } else if (message.action === "deleteFavResource") {
+      handleDeleteFavResource(message, sendResponse);
+      return true;
+    } else if (message.action === "moveFavResource") {
+      handleMoveFavResource(message, sendResponse);
+      return true;
+    } else if (message.action === "unsubscribeCollection") {
+      handleUnsubscribeCollection(message, sendResponse);
       return true; // 保持消息通道开放
     } else if (message.action === "syncFavorites") {
       handleSyncFavorites(message, sendResponse);

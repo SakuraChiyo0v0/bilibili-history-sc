@@ -976,6 +976,65 @@ export const getFavResources = async (folderId?: number): Promise<FavoriteResour
   });
 };
 
+export const deleteFavFolder = async (folderId: number): Promise<void> => {
+  const db = await openDB();
+  const tx = db.transaction(["favFolders", "favResources"], "readwrite");
+  const folderStore = tx.objectStore("favFolders");
+  const resourceStore = tx.objectStore("favResources");
+  const folderIndex = resourceStore.index("folder_id");
+
+  return new Promise((resolve, reject) => {
+    folderStore.delete(folderId);
+    const resourceKeysRequest = folderIndex.getAllKeys(folderId);
+    resourceKeysRequest.onsuccess = () => {
+      resourceKeysRequest.result.forEach((key) => resourceStore.delete(key));
+    };
+    resourceKeysRequest.onerror = () => reject(resourceKeysRequest.error);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+};
+
+export const deleteFavResource = async (folderId: number, resourceId: number): Promise<void> => {
+  const db = await openDB();
+  const tx = db.transaction("favResources", "readwrite");
+  const store = tx.objectStore("favResources");
+
+  return new Promise((resolve, reject) => {
+    const request = store.get(resourceId);
+    request.onsuccess = () => {
+      const resource = request.result as FavoriteResource | undefined;
+      if (resource?.folder_id === folderId) store.delete(resourceId);
+    };
+    request.onerror = () => reject(request.error);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+};
+
+export const moveFavResource = async (
+  sourceFolderId: number,
+  targetFolderId: number,
+  resourceId: number,
+): Promise<void> => {
+  const db = await openDB();
+  const tx = db.transaction("favResources", "readwrite");
+  const store = tx.objectStore("favResources");
+
+  return new Promise((resolve, reject) => {
+    const request = store.get(resourceId);
+    request.onsuccess = () => {
+      const resource = request.result as FavoriteResource | undefined;
+      if (resource?.folder_id === sourceFolderId) {
+        store.put({ ...resource, folder_id: targetFolderId });
+      }
+    };
+    request.onerror = () => reject(request.error);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+};
+
 export const replaceSubscribedCollections = async (
   collections: SubscribedCollection[],
 ): Promise<void> => {
@@ -1039,6 +1098,28 @@ export const getSubscribedCollectionResources = async (
     const request = collectionIndex.getAll(collectionId);
     request.onsuccess = () => resolve(request.result);
     request.onerror = () => reject(request.error);
+  });
+};
+
+export const deleteSubscribedCollection = async (collectionId: number): Promise<void> => {
+  const db = await openDB();
+  const tx = db.transaction(
+    ["subscribedCollections", "subscribedCollectionResources"],
+    "readwrite",
+  );
+  const collectionStore = tx.objectStore("subscribedCollections");
+  const resourceStore = tx.objectStore("subscribedCollectionResources");
+  const collectionIndex = resourceStore.index("collection_id");
+
+  return new Promise((resolve, reject) => {
+    collectionStore.delete(collectionId);
+    const resourceKeysRequest = collectionIndex.getAllKeys(collectionId);
+    resourceKeysRequest.onsuccess = () => {
+      resourceKeysRequest.result.forEach((key) => resourceStore.delete(key));
+    };
+    resourceKeysRequest.onerror = () => reject(resourceKeysRequest.error);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
   });
 };
 

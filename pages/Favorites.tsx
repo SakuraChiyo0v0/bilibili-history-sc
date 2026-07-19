@@ -1,10 +1,23 @@
 import { useEffect, useState, useRef } from "react";
 import { getFavFolders, getFavResources } from "../utils/db";
 import { FavoriteFolder, FavoriteResource } from "../utils/types";
-import { Folder, Video, Search, X, ChevronDownIcon } from "lucide-react";
+import { ArrowRightLeft, Folder, Pencil, Search, Trash2, X, ChevronDownIcon } from "lucide-react";
 import { Pagination } from "../components/Pagination";
 import { BilibiliDashPlayer } from "../components/BilibiliDashPlayer";
 import { useVideoClickMode } from "../hooks/useVideoClickMode";
+import { ContextMenu } from "../components/ContextMenu";
+import { ActionDialog } from "../components/ActionDialog";
+import toast from "react-hot-toast";
+
+type FavoritesContextTarget =
+  | { type: "folder"; folder: FavoriteFolder }
+  | { type: "resource"; resource: FavoriteResource };
+
+type FavoritesDialog =
+  | { type: "edit-folder"; folder: FavoriteFolder }
+  | { type: "delete-folder"; folder: FavoriteFolder }
+  | { type: "delete-resource"; resource: FavoriteResource }
+  | { type: "move-resource"; resource: FavoriteResource };
 
 export const Favorites = () => {
   const [folders, setFolders] = useState<FavoriteFolder[]>([]);
@@ -16,6 +29,15 @@ export const Favorites = () => {
   const [searchType, setSearchType] = useState<"all" | "title" | "up" | "bvid" | "avid">("all");
   const [isSearchKindDropdownOpen, setIsSearchKindDropdownOpen] = useState(false);
   const [playingResource, setPlayingResource] = useState<FavoriteResource | null>(null);
+  const [contextMenu, setContextMenu] = useState<{
+    x: number;
+    y: number;
+    target: FavoritesContextTarget;
+  } | null>(null);
+  const [dialog, setDialog] = useState<FavoritesDialog | null>(null);
+  const [folderTitle, setFolderTitle] = useState("");
+  const [targetFolderId, setTargetFolderId] = useState<number | null>(null);
+  const [isSubmitting, setIsSubmitting] = useState(false);
   const videoClickMode = useVideoClickMode("favorites");
   const pageSize = 50;
 
@@ -78,6 +100,82 @@ export const Favorites = () => {
     }
   };
 
+  const handleDialogConfirm = async () => {
+    if (!dialog) return;
+    if (dialog.type === "edit-folder" && !folderTitle.trim()) {
+      toast.error("收藏夹名称不能为空");
+      return;
+    }
+    if (dialog.type === "move-resource" && !targetFolderId) {
+      toast.error("请选择目标收藏夹");
+      return;
+    }
+
+    setIsSubmitting(true);
+    try {
+      if (dialog.type === "edit-folder") {
+        const response = await browser.runtime.sendMessage({
+          action: "editFavFolder",
+          folderId: dialog.folder.id,
+          title: folderTitle.trim(),
+        });
+        if (!response?.success) throw new Error(response?.error || "修改收藏夹失败");
+        setFolders((current) =>
+          current.map((folder) =>
+            folder.id === dialog.folder.id ? { ...folder, title: folderTitle.trim() } : folder,
+          ),
+        );
+        toast.success("收藏夹名称已修改");
+      } else if (dialog.type === "delete-folder") {
+        const response = await browser.runtime.sendMessage({
+          action: "deleteFavFolder",
+          folderId: dialog.folder.id,
+        });
+        if (!response?.success) throw new Error(response?.error || "删除收藏夹失败");
+        const remainingFolders = folders.filter((folder) => folder.id !== dialog.folder.id);
+        setFolders(remainingFolders);
+        setSelectedFolderId((currentId) =>
+          currentId === dialog.folder.id ? (remainingFolders[0]?.id ?? null) : currentId,
+        );
+        if (selectedFolderId === dialog.folder.id) {
+          setResources([]);
+          setPlayingResource(null);
+        }
+        toast.success("收藏夹已删除");
+      } else if (dialog.type === "delete-resource") {
+        const response = await browser.runtime.sendMessage({
+          action: "deleteFavResource",
+          folderId: dialog.resource.folder_id,
+          resourceId: dialog.resource.id,
+          resourceType: dialog.resource.type,
+        });
+        if (!response?.success) throw new Error(response?.error || "移出收藏夹失败");
+        setResources((current) => current.filter((resource) => resource.id !== dialog.resource.id));
+        setPlayingResource((current) =>
+          current?.id === dialog.resource.id ? null : current,
+        );
+        toast.success("已移出当前收藏夹");
+      } else {
+        const response = await browser.runtime.sendMessage({
+          action: "moveFavResource",
+          sourceFolderId: dialog.resource.folder_id,
+          targetFolderId,
+          resourceId: dialog.resource.id,
+          resourceType: dialog.resource.type,
+        });
+        if (!response?.success) throw new Error(response?.error || "移动收藏内容失败");
+        setResources((current) => current.filter((resource) => resource.id !== dialog.resource.id));
+        setPlayingResource((current) => (current?.id === dialog.resource.id ? null : current));
+        toast.success("内容已移动");
+      }
+      setDialog(null);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "操作失败，请稍后重试");
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
   const filteredResources = resources.filter((item) => {
     if (!keyword) return true;
     const lowerKeyword = keyword.toLowerCase();
@@ -105,6 +203,8 @@ export const Favorites = () => {
   const startIndex = (currentPage - 1) * pageSize;
   const currentResources = filteredResources.slice(startIndex, startIndex + pageSize);
   const playableResources = filteredResources.filter((item) => Boolean(item.bvid));
+  const contextFolder = contextMenu?.target.type === "folder" ? contextMenu.target : null;
+  const contextResource = contextMenu?.target.type === "resource" ? contextMenu.target : null;
   const playingResourceIndex = playingResource
     ? playableResources.findIndex((item) => item.id === playingResource.id)
     : -1;
@@ -136,6 +236,10 @@ export const Favorites = () => {
                 selectedFolderIdRef.current = folder.id;
                 setSelectedFolderId(folder.id);
                 setPlayingResource(null);
+              }}
+              onContextMenu={(event) => {
+                event.preventDefault();
+                setContextMenu({ x: event.clientX, y: event.clientY, target: { type: "folder", folder } });
               }}
             >
               <div className="font-medium truncate">{folder.title}</div>
@@ -257,6 +361,14 @@ export const Favorites = () => {
                     <div
                       key={item.id}
                       className="border border-gray-200 dark:border-neutral-800 rounded-lg overflow-hidden flex flex-col bg-white dark:bg-neutral-900 hover:shadow-md transition-shadow"
+                      onContextMenu={(event) => {
+                        event.preventDefault();
+                        setContextMenu({
+                          x: event.clientX,
+                          y: event.clientY,
+                          target: { type: "resource", resource: item },
+                        });
+                      }}
                     >
                       <a
                         href={`https://www.bilibili.com/video/${item.bvid}`}
@@ -343,6 +455,109 @@ export const Favorites = () => {
           onNext={() => setPlayingResource(playableResources[playingResourceIndex + 1])}
         />
       )}
+      <ContextMenu
+        position={contextMenu ? { x: contextMenu.x, y: contextMenu.y } : null}
+        onClose={() => setContextMenu(null)}
+        items={
+          contextFolder
+            ? [
+                {
+                  label: "修改名称",
+                  icon: <Pencil className="h-4 w-4" />,
+                  onSelect: () => {
+                    setFolderTitle(contextFolder.folder.title);
+                    setDialog({ type: "edit-folder", folder: contextFolder.folder });
+                  },
+                },
+                {
+                  label: "删除收藏夹",
+                  icon: <Trash2 className="h-4 w-4" />,
+                  danger: true,
+                  onSelect: () => setDialog({ type: "delete-folder", folder: contextFolder.folder }),
+                },
+              ]
+            : contextResource
+              ? [
+                  {
+                    label: "移出当前收藏夹",
+                    icon: <Trash2 className="h-4 w-4" />,
+                    danger: true,
+                    onSelect: () =>
+                      setDialog({ type: "delete-resource", resource: contextResource.resource }),
+                  },
+                  ...(folders.some((folder) => folder.id !== contextResource.resource.folder_id)
+                    ? [
+                        {
+                          label: "移动到其他收藏夹",
+                          icon: <ArrowRightLeft className="h-4 w-4" />,
+                          onSelect: () => {
+                            setTargetFolderId(
+                              folders.find((folder) => folder.id !== contextResource.resource.folder_id)
+                                ?.id ?? null,
+                            );
+                            setDialog({ type: "move-resource", resource: contextResource.resource });
+                          },
+                        },
+                      ]
+                    : []),
+                ]
+              : []
+        }
+      />
+      <ActionDialog
+        isOpen={Boolean(dialog)}
+        title={
+          dialog?.type === "edit-folder"
+            ? "修改收藏夹名称"
+            : dialog?.type === "delete-folder"
+              ? "删除收藏夹"
+              : dialog?.type === "move-resource"
+                ? "移动收藏内容"
+                : "移出收藏夹"
+        }
+        description={
+          dialog?.type === "edit-folder"
+            ? "修改会同步到 B 站。"
+            : dialog?.type === "delete-folder"
+              ? `确定删除“${dialog.folder.title}”吗？其中的收藏内容也会从 B 站移除。`
+              : dialog?.type === "move-resource"
+                ? "移动后，内容会从当前收藏夹移除。"
+              : "确定将此内容从当前收藏夹移除吗？不会影响视频本身。"
+        }
+        confirmLabel={dialog?.type === "edit-folder" ? "保存" : "确认操作"}
+        isDanger={dialog?.type === "delete-folder" || dialog?.type === "delete-resource"}
+        isSubmitting={isSubmitting}
+        onClose={() => setDialog(null)}
+        onConfirm={handleDialogConfirm}
+      >
+        {dialog?.type === "edit-folder" && (
+          <input
+            autoFocus
+            value={folderTitle}
+            onChange={(event) => setFolderTitle(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") handleDialogConfirm();
+            }}
+            className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100 dark:border-neutral-700 dark:bg-neutral-800 dark:text-white dark:focus:ring-blue-500/20"
+            maxLength={50}
+          />
+        )}
+        {dialog?.type === "move-resource" && (
+          <select
+            value={targetFolderId ?? ""}
+            onChange={(event) => setTargetFolderId(Number(event.target.value))}
+            className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100 dark:border-neutral-700 dark:bg-neutral-800 dark:text-white dark:focus:ring-blue-500/20"
+          >
+            {folders
+              .filter((folder) => folder.id !== dialog.resource.folder_id)
+              .map((folder) => (
+                <option key={folder.id} value={folder.id}>
+                  {folder.title}
+                </option>
+              ))}
+          </select>
+        )}
+      </ActionDialog>
     </div>
   );
 };
