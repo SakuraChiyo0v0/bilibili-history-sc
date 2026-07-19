@@ -132,8 +132,16 @@ export const SubscribedCollections = () => {
 
   const startIndex = (currentPage - 1) * pageSize;
   const currentResources = filteredResources.slice(startIndex, startIndex + pageSize);
+  const playableResources = filteredResources.filter((item) => Boolean(item.bvid));
+  const playingResourceIndex = playingResource
+    ? playableResources.findIndex((item) => item.id === playingResource.id)
+    : -1;
   const searchLabel =
     SEARCH_OPTIONS.find((option) => option.value === searchType)?.label || "综合搜索";
+
+  useEffect(() => {
+    if (playingResource && playingResourceIndex === -1) setPlayingResource(null);
+  }, [playingResource, playingResourceIndex]);
 
   return (
     <div className="flex h-screen bg-gray-50 dark:bg-[#0a0a0a]">
@@ -163,6 +171,7 @@ export const SubscribedCollections = () => {
               onClick={() => {
                 selectedCollectionIdRef.current = collection.id;
                 setSelectedCollectionId(collection.id);
+                setPlayingResource(null);
               }}
               className={`w-full p-3 rounded-lg text-left mb-1 transition-colors ${
                 selectedCollectionId === collection.id
@@ -391,6 +400,10 @@ export const SubscribedCollections = () => {
           bvid={playingResource.bvid}
           title={playingResource.title}
           onClose={() => setPlayingResource(null)}
+          hasPrevious={playingResourceIndex > 0}
+          hasNext={playingResourceIndex < playableResources.length - 1}
+          onPrevious={() => setPlayingResource(playableResources[playingResourceIndex - 1])}
+          onNext={() => setPlayingResource(playableResources[playingResourceIndex + 1])}
         />
       )}
     </div>

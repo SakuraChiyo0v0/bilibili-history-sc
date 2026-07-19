@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { ExternalLink, Loader2, X } from "lucide-react";
+import { ChevronLeft, ChevronRight, ExternalLink, Loader2, X } from "lucide-react";
 
 interface DashStream {
   base_url?: string;
@@ -18,6 +18,10 @@ interface BilibiliDashPlayerProps {
   bvid: string;
   title: string;
   onClose: () => void;
+  onPrevious?: () => void;
+  onNext?: () => void;
+  hasPrevious?: boolean;
+  hasNext?: boolean;
 }
 
 const getStreamUrls = (stream: DashStream) =>
@@ -152,7 +156,15 @@ const streamToSourceBuffer = (
   return { started, completed };
 };
 
-export const BilibiliDashPlayer = ({ bvid, title, onClose }: BilibiliDashPlayerProps) => {
+export const BilibiliDashPlayer = ({
+  bvid,
+  title,
+  onClose,
+  onPrevious,
+  onNext,
+  hasPrevious = false,
+  hasNext = false,
+}: BilibiliDashPlayerProps) => {
   const videoRef = useRef<HTMLVideoElement>(null);
   const [error, setError] = useState("");
   const [isLoading, setIsLoading] = useState(true);
@@ -160,6 +172,10 @@ export const BilibiliDashPlayer = ({ bvid, title, onClose }: BilibiliDashPlayerP
 
   useEffect(() => {
     if (!videoRef.current || !bvid) return;
+
+    setError("");
+    setIsLoading(true);
+    setStreamLabel("");
 
     const videoElement = videoRef.current;
     const controller = new AbortController();
@@ -263,6 +279,26 @@ export const BilibiliDashPlayer = ({ bvid, title, onClose }: BilibiliDashPlayerP
             {streamLabel && <p className="mt-1 text-xs text-gray-500">{streamLabel}</p>}
           </div>
           <div className="flex shrink-0 items-center gap-2">
+            <button
+              type="button"
+              onClick={onPrevious}
+              disabled={!hasPrevious}
+              className="rounded-md p-2 text-gray-500 transition-colors hover:bg-gray-100 hover:text-gray-900 disabled:cursor-not-allowed disabled:opacity-35 dark:text-neutral-400 dark:hover:bg-neutral-800 dark:hover:text-white"
+              title="上一个视频"
+              aria-label="上一个视频"
+            >
+              <ChevronLeft className="h-5 w-5" />
+            </button>
+            <button
+              type="button"
+              onClick={onNext}
+              disabled={!hasNext}
+              className="rounded-md p-2 text-gray-500 transition-colors hover:bg-gray-100 hover:text-gray-900 disabled:cursor-not-allowed disabled:opacity-35 dark:text-neutral-400 dark:hover:bg-neutral-800 dark:hover:text-white"
+              title="下一个视频"
+              aria-label="下一个视频"
+            >
+              <ChevronRight className="h-5 w-5" />
+            </button>
             <a
               href={`https://www.bilibili.com/video/${bvid}`}
               target="_blank"
@@ -284,7 +320,15 @@ export const BilibiliDashPlayer = ({ bvid, title, onClose }: BilibiliDashPlayerP
         </div>
 
         <div className="relative aspect-video bg-black">
-          <video ref={videoRef} controls playsInline className="h-full w-full" />
+          <video
+            ref={videoRef}
+            controls
+            playsInline
+            onEnded={() => {
+              if (hasNext) onNext?.();
+            }}
+            className="h-full w-full"
+          />
           {isLoading && !error && (
             <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-black/50 text-sm text-white">
               <Loader2 className="h-7 w-7 animate-spin" />
