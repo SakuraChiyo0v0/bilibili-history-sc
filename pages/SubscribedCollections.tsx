@@ -26,6 +26,8 @@ export const SubscribedCollections = () => {
   const [searchType, setSearchType] = useState<SearchType>("all");
   const [isSearchKindDropdownOpen, setIsSearchKindDropdownOpen] = useState(false);
   const contentRef = useRef<HTMLDivElement>(null);
+  const selectedCollectionIdRef = useRef<number | null>(null);
+  const resourceSyncRequestIdRef = useRef(0);
   const pageSize = 50;
 
   const selectedCollection = collections.find(
@@ -45,6 +47,8 @@ export const SubscribedCollections = () => {
 
   const loadResources = async (collectionId: number) => {
     const list = await getSubscribedCollectionResources(collectionId);
+    if (selectedCollectionIdRef.current !== collectionId) return;
+
     setResources(list.sort((a, b) => a.index - b.index));
     setCurrentPage(1);
     setKeyword("");
@@ -64,6 +68,7 @@ export const SubscribedCollections = () => {
   };
 
   const refreshResources = async (collection: SubscribedCollection) => {
+    const requestId = ++resourceSyncRequestIdRef.current;
     setIsSyncingResources(true);
     try {
       const response = await browser.runtime.sendMessage({
@@ -76,7 +81,7 @@ export const SubscribedCollections = () => {
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "同步合集内容失败");
     } finally {
-      setIsSyncingResources(false);
+      if (requestId === resourceSyncRequestIdRef.current) setIsSyncingResources(false);
     }
   };
 
@@ -86,6 +91,8 @@ export const SubscribedCollections = () => {
   }, []);
 
   useEffect(() => {
+    selectedCollectionIdRef.current = selectedCollectionId;
+
     if (!selectedCollection) {
       setResources([]);
       return;
@@ -149,7 +156,10 @@ export const SubscribedCollections = () => {
             <button
               key={collection.id}
               type="button"
-              onClick={() => setSelectedCollectionId(collection.id)}
+              onClick={() => {
+                selectedCollectionIdRef.current = collection.id;
+                setSelectedCollectionId(collection.id);
+              }}
               className={`w-full p-3 rounded-lg text-left mb-1 transition-colors ${
                 selectedCollectionId === collection.id
                   ? "bg-blue-50 dark:bg-blue-500/10 text-blue-600 dark:text-blue-400"
