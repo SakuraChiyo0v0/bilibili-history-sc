@@ -345,6 +345,21 @@ export default defineBackground(() => {
     }
   };
 
+  const handleSyncAllSubscribedCollectionResources = async (
+    sendResponse: (response: any) => void,
+  ) => {
+    try {
+      await syncAllSubscribedCollectionResources();
+      sendResponse({ success: true, message: "全部合集内容同步成功" });
+    } catch (error) {
+      console.error("同步全部合集内容失败:", error);
+      sendResponse({
+        success: false,
+        error: error instanceof Error ? error.message : "未知错误",
+      });
+    }
+  };
+
   // 处理删除历史记录的消息
   const handleDeleteHistoryItem = async (message: any, sendResponse: (response: any) => void) => {
     try {
@@ -383,6 +398,9 @@ export default defineBackground(() => {
       return true;
     } else if (message.action === "syncSubscribedCollectionResources") {
       handleSyncSubscribedCollectionResources(message, sendResponse);
+      return true;
+    } else if (message.action === "syncAllSubscribedCollectionResources") {
+      handleSyncAllSubscribedCollectionResources(sendResponse);
       return true;
     }
   });
@@ -781,6 +799,15 @@ export default defineBackground(() => {
     await replaceSubscribedCollectionResources(collectionId, resources);
   }
 
+  async function syncAllSubscribedCollectionResources(): Promise<void> {
+    await syncSubscribedCollections();
+    const collections = await getAllSubscribedCollections();
+
+    for (const collection of collections) {
+      await syncSubscribedCollectionResources(collection.id);
+    }
+  }
+
   // WebDAV 自动双向同步：拉取 → 合并 → 推送
   async function autoSyncWebDav(): Promise<void> {
     try {
@@ -792,6 +819,12 @@ export default defineBackground(() => {
 
       console.log("开始 WebDAV 双向同步...");
       await ensureDirectory(config);
+
+      try {
+        await syncAllSubscribedCollectionResources();
+      } catch (error) {
+        console.warn("刷新合集缓存失败，将继续同步已有本地数据:", error);
+      }
 
       // ===== 第一步：拉取远端数据并合并到本地 =====
       console.log("[WebDAV 同步] 步骤 1/2：拉取并合并远端数据...");
