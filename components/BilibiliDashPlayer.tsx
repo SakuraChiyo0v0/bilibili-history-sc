@@ -226,7 +226,7 @@ export const BilibiliDashPlayer = ({
 }: BilibiliDashPlayerProps) => {
   const playerContainerRef = useRef<HTMLDivElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
-  const audioRef = useRef<HTMLAudioElement>(null);
+  const playerRef = useRef<InstanceType<typeof Shaka.Player> | null>(null);
   const resumeTimeRef = useRef<number | null>(null);
   const recoveryAttemptsRef = useRef(new Set<string>());
   const currentPlaybackKeyRef = useRef("");
@@ -242,6 +242,7 @@ export const BilibiliDashPlayer = ({
   const [isMuted, setIsMuted] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [playbackReloadVersion, setPlaybackReloadVersion] = useState(0);
+  const [isPlayerReady, setIsPlayerReady] = useState(false);
 
   useEffect(() => {
     if (!nextBvid || nextBvid === bvid) return;
@@ -258,25 +259,12 @@ export const BilibiliDashPlayer = ({
   }, [bvid, isMusicMode]);
 
   useEffect(() => {
-    const mediaElement = isMusicMode ? audioRef.current : videoRef.current;
-    if (!mediaElement || !bvid) return;
+    const mediaElement = videoRef.current;
+    if (!mediaElement) return;
 
-    setError("");
-    setIsLoading(true);
-    setStreamLabel("");
-
-    const resumeTime = resumeTimeRef.current;
-    resumeTimeRef.current = null;
-    setIsPlaying(false);
-    setCurrentTime(resumeTime || 0);
-    setDuration(0);
-    mediaElement.volume = volume;
-    mediaElement.muted = isMuted;
-    let manifestUrl = "";
-    let player: InstanceType<typeof Shaka.Player> | null = null;
     let disposed = false;
 
-    const load = async () => {
+    const initialize = async () => {
       try {
         const { default: shaka } = await import("shaka-player/dist/shaka-player.dash");
         shaka.polyfill.installAll();
@@ -284,15 +272,7 @@ export const BilibiliDashPlayer = ({
           throw new Error("当前浏览器不支持 DASH 播放");
         }
 
-        const playback = await getDashPlayback(bvid);
-        if (disposed) return;
-        setCover(playback.cover);
-
-        const manifest = createManifest(playback.dash, isMusicMode);
-        manifestUrl = URL.createObjectURL(new Blob([manifest], { type: "application/dash+xml" }));
-        if (disposed) return;
-
-        player = new shaka.Player(mediaElement);
+        const player = new shaka.Player(mediaElement);
         player.configure({
           streaming: {
             bufferingGoal: 15,
@@ -312,23 +292,86 @@ export const BilibiliDashPlayer = ({
         player.getNetworkingEngine()?.registerRequestFilter((_type, request) => {
           request.allowCrossSiteCredentials = true;
         });
-        player.addEventListener("error", (event) => {
-          const detail = (
-            event as Event & { detail?: { category?: number; code?: number; message?: string } }
-          ).detail;
-          const playbackKey = `${bvid}:${isMusicMode ? "audio" : "video"}`;
-          if (detail?.category === 1 && !recoveryAttemptsRef.current.has(playbackKey)) {
-            recoveryAttemptsRef.current.add(playbackKey);
-            resumeTimeRef.current = mediaElement.currentTime;
-            dashPlaybackCache.delete(bvid);
-            setPlaybackReloadVersion((version) => version + 1);
-            return;
-          }
-          if (!disposed) {
-            setError(detail?.message || `播放器错误 (${detail?.code || "未知"})`);
-            setIsLoading(false);
-          }
-        });
+
+        if (disposed) {
+          await player.destroy();
+          return;
+        }
+        playerRef.current = player;
+        setIsPlayerReady(true);
+      } catch (initializeError) {
+        if (disposed) return;
+        console.error("初始化 Shaka 播放器失败:", initializeError);
+        setError(initializeError instanceof Error ? initializeError.message : "初始化播放器失败");
+        setIsLoading(false);
+      }
+    };
+
+    void initialize();
+
+    return () => {
+      disposed = true;
+      const player = playerRef.current;
+      playerRef.current = null;
+      setIsPlayerReady(false);
+      void player?.destroy();
+    };
+  }, []);
+
+  useEffect(() => {
+    const mediaElement = videoRef.current;
+    const player = playerRef.current;
+    if (!mediaElement || !player || !bvid || !isPlayerReady) return;
+
+    setError("");
+    setIsLoading(true);
+    setStreamLabel("");
+
+    const resumeTime = resumeTimeRef.current;
+    resumeTimeRef.current = null;
+    setIsPlaying(false);
+    setCurrentTime(resumeTime || 0);
+    setDuration(0);
+    mediaElement.volume = volume;
+    mediaElement.muted = isMuted;
+    let manifestUrl = "";
+    let disposed = false;
+    let recoveryScheduled = false;
+
+    const handlePlayerError = (event: Event) => {
+      const detail = (
+        event as Event & { detail?: { category?: number; code?: number; message?: string } }
+      ).detail;
+      const playbackKey = `${bvid}:${isMusicMode ? "audio" : "video"}`;
+      if (
+        !disposed &&
+        !recoveryScheduled &&
+        detail?.category === 1 &&
+        !recoveryAttemptsRef.current.has(playbackKey)
+      ) {
+        recoveryScheduled = true;
+        recoveryAttemptsRef.current.add(playbackKey);
+        resumeTimeRef.current = mediaElement.currentTime;
+        dashPlaybackCache.delete(bvid);
+        setPlaybackReloadVersion((version) => version + 1);
+        return;
+      }
+      if (recoveryScheduled) return;
+      if (!disposed) {
+        setError(detail?.message || `播放器错误 (${detail?.code || "未知"})`);
+        setIsLoading(false);
+      }
+    };
+
+    const load = async () => {
+      try {
+        const playback = await getDashPlayback(bvid);
+        if (disposed) return;
+        setCover(playback.cover);
+
+        const manifest = createManifest(playback.dash, isMusicMode);
+        manifestUrl = URL.createObjectURL(new Blob([manifest], { type: "application/dash+xml" }));
+        if (disposed) return;
 
         await player.load(manifestUrl, resumeTime ?? undefined);
         if (disposed) return;
@@ -353,15 +396,16 @@ export const BilibiliDashPlayer = ({
       }
     };
 
+    player.addEventListener("error", handlePlayerError);
     void load();
 
     return () => {
       disposed = true;
+      player.removeEventListener("error", handlePlayerError);
       mediaElement.pause();
-      void player?.destroy();
       if (manifestUrl) URL.revokeObjectURL(manifestUrl);
     };
-  }, [bvid, isMusicMode, playbackReloadVersion]);
+  }, [bvid, isMusicMode, isPlayerReady, playbackReloadVersion]);
 
   useEffect(() => {
     const handleFullscreenChange = () => {
@@ -373,11 +417,11 @@ export const BilibiliDashPlayer = ({
   }, []);
 
   const toggleMusicMode = () => {
-    resumeTimeRef.current = (isMusicMode ? audioRef.current : videoRef.current)?.currentTime || 0;
+    resumeTimeRef.current = videoRef.current?.currentTime || 0;
     setIsMusicMode((current) => !current);
   };
 
-  const getMediaElement = () => (isMusicMode ? audioRef.current : videoRef.current);
+  const getMediaElement = () => videoRef.current;
 
   const togglePlayback = () => {
     const mediaElement = getMediaElement();
@@ -486,8 +530,24 @@ export const BilibiliDashPlayer = ({
         </div>
 
         <div className="relative aspect-video bg-black">
-          {isMusicMode ? (
-            <div className="relative flex h-full w-full items-center justify-center overflow-hidden bg-neutral-950">
+          <video
+            ref={videoRef}
+            playsInline
+            onLoadedMetadata={(event) => setDuration(event.currentTarget.duration)}
+            onTimeUpdate={(event) => setCurrentTime(event.currentTarget.currentTime)}
+            onPlay={() => setIsPlaying(true)}
+            onPause={() => setIsPlaying(false)}
+            onVolumeChange={(event) => {
+              setVolume(event.currentTarget.volume);
+              setIsMuted(event.currentTarget.muted);
+            }}
+            onEnded={() => {
+              if (hasNext) onNext?.();
+            }}
+            className="h-full w-full"
+          />
+          {isMusicMode && (
+            <div className="absolute inset-0 flex items-center justify-center overflow-hidden bg-neutral-950">
               {cover ? (
                 <img
                   src={`${cover.replace("http:", "https:")}@960w_540h_1c.avif`}
@@ -498,39 +558,7 @@ export const BilibiliDashPlayer = ({
                 <Music className="h-16 w-16 text-white/60" />
               )}
               <div className="absolute inset-0 bg-black/20" />
-              <audio
-                ref={audioRef}
-                onLoadedMetadata={(event) => setDuration(event.currentTarget.duration)}
-                onTimeUpdate={(event) => setCurrentTime(event.currentTarget.currentTime)}
-                onPlay={() => setIsPlaying(true)}
-                onPause={() => setIsPlaying(false)}
-                onVolumeChange={(event) => {
-                  setVolume(event.currentTarget.volume);
-                  setIsMuted(event.currentTarget.muted);
-                }}
-                onEnded={() => {
-                  if (hasNext) onNext?.();
-                }}
-                className="sr-only"
-              />
             </div>
-          ) : (
-            <video
-              ref={videoRef}
-              playsInline
-              onLoadedMetadata={(event) => setDuration(event.currentTarget.duration)}
-              onTimeUpdate={(event) => setCurrentTime(event.currentTarget.currentTime)}
-              onPlay={() => setIsPlaying(true)}
-              onPause={() => setIsPlaying(false)}
-              onVolumeChange={(event) => {
-                setVolume(event.currentTarget.volume);
-                setIsMuted(event.currentTarget.muted);
-              }}
-              onEnded={() => {
-                if (hasNext) onNext?.();
-              }}
-              className="h-full w-full"
-            />
           )}
           <div className="absolute inset-x-0 bottom-0 z-10 bg-gradient-to-t from-black/85 via-black/50 to-transparent px-5 pb-4 pt-10 text-white">
             <div className="flex items-center gap-3">
