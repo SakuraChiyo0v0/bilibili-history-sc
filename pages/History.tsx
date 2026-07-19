@@ -427,6 +427,7 @@ export const History: React.FC = () => {
           onClose={() => setPlayingHistoryItem(null)}
           hasPrevious={playingHistoryIndex > 0}
           hasNext={playingHistoryIndex < playableHistory.length - 1}
+          nextBvid={playableHistory[playingHistoryIndex + 1]?.bvid}
           onPrevious={() => setPlayingHistoryItem(playableHistory[playingHistoryIndex - 1])}
           onNext={() => setPlayingHistoryItem(playableHistory[playingHistoryIndex + 1])}
         />

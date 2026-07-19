@@ -48,7 +48,25 @@ interface BilibiliDashPlayerProps {
   onNext?: () => void;
   hasPrevious?: boolean;
   hasNext?: boolean;
+  nextBvid?: string;
 }
+
+interface DashPlayback {
+  cover: string;
+  dash: {
+    video?: DashStream[];
+    audio?: DashStream[];
+    duration?: number;
+  };
+}
+
+interface DashPlaybackCacheEntry {
+  expiresAt: number;
+  promise: Promise<DashPlayback>;
+}
+
+const DASH_PLAYBACK_CACHE_TTL = 5 * 60 * 1000;
+const dashPlaybackCache = new Map<string, DashPlaybackCacheEntry>();
 
 const escapeXml = (value: string) =>
   value
@@ -134,20 +152,55 @@ const createManifest = (
   return `<?xml version="1.0" encoding="UTF-8"?><MPD xmlns="urn:mpeg:dash:schema:mpd:2011" type="static" profiles="urn:mpeg:dash:profile:isoff-on-demand:2011" mediaPresentationDuration="PT${duration}S" minBufferTime="PT1.5S"><Period duration="PT${duration}S">${videoSet}${audioSet}</Period></MPD>`;
 };
 
-const fetchJsonWithRetry = async (url: string, signal: AbortSignal) => {
+const fetchJsonWithRetry = async (url: string) => {
   let lastError: unknown;
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
-      const response = await fetch(url, { signal, credentials: "include", cache: "no-store" });
+      const response = await fetch(url, { credentials: "include", cache: "no-store" });
       if (!response.ok) throw new Error(`请求失败 (${response.status})`);
       return response.json();
     } catch (error) {
-      if (signal.aborted) throw error;
       lastError = error;
       await new Promise((resolve) => setTimeout(resolve, 400 * (attempt + 1)));
     }
   }
   throw lastError instanceof Error ? lastError : new Error("网络请求失败");
+};
+
+const fetchDashPlayback = async (bvid: string): Promise<DashPlayback> => {
+  const viewResult = await fetchJsonWithRetry(
+    `https://api.bilibili.com/x/web-interface/view?bvid=${encodeURIComponent(bvid)}`,
+  );
+  if (viewResult.code !== 0 || !viewResult.data?.cid) {
+    throw new Error(viewResult.message || "获取视频信息失败");
+  }
+
+  const playResult = await fetchJsonWithRetry(
+    `https://api.bilibili.com/x/player/playurl?fnval=16&bvid=${encodeURIComponent(bvid)}&cid=${viewResult.data.cid}`,
+  );
+  if (playResult.code !== 0 || !playResult.data?.dash) {
+    throw new Error(playResult.message || "获取 DASH 播放地址失败");
+  }
+
+  return {
+    cover: viewResult.data.pic || "",
+    dash: playResult.data.dash,
+  };
+};
+
+const getDashPlayback = (bvid: string) => {
+  const cached = dashPlaybackCache.get(bvid);
+  if (cached && cached.expiresAt > Date.now()) return cached.promise;
+
+  const promise = fetchDashPlayback(bvid).catch((error) => {
+    dashPlaybackCache.delete(bvid);
+    throw error;
+  });
+  dashPlaybackCache.set(bvid, {
+    expiresAt: Date.now() + DASH_PLAYBACK_CACHE_TTL,
+    promise,
+  });
+  return promise;
 };
 
 const formatTime = (time: number) => {
@@ -169,6 +222,7 @@ export const BilibiliDashPlayer = ({
   onNext,
   hasPrevious = false,
   hasNext = false,
+  nextBvid,
 }: BilibiliDashPlayerProps) => {
   const playerContainerRef = useRef<HTMLDivElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -187,6 +241,13 @@ export const BilibiliDashPlayer = ({
   const [isFullscreen, setIsFullscreen] = useState(false);
 
   useEffect(() => {
+    if (!nextBvid || nextBvid === bvid) return;
+    void getDashPlayback(nextBvid).catch(() => {
+      // 预取失败不影响当前视频播放，切换时仍会按正常流程请求。
+    });
+  }, [bvid, nextBvid]);
+
+  useEffect(() => {
     const mediaElement = isMusicMode ? audioRef.current : videoRef.current;
     if (!mediaElement || !bvid) return;
 
@@ -201,7 +262,6 @@ export const BilibiliDashPlayer = ({
     setDuration(0);
     mediaElement.volume = volume;
     mediaElement.muted = isMuted;
-    const controller = new AbortController();
     let manifestUrl = "";
     let player: InstanceType<typeof Shaka.Player> | null = null;
     let disposed = false;
@@ -214,24 +274,11 @@ export const BilibiliDashPlayer = ({
           throw new Error("当前浏览器不支持 DASH 播放");
         }
 
-        const viewResult = await fetchJsonWithRetry(
-          `https://api.bilibili.com/x/web-interface/view?bvid=${encodeURIComponent(bvid)}`,
-          controller.signal,
-        );
-        if (viewResult.code !== 0 || !viewResult.data?.cid) {
-          throw new Error(viewResult.message || "获取视频信息失败");
-        }
-        setCover(viewResult.data.pic || "");
+        const playback = await getDashPlayback(bvid);
+        if (disposed) return;
+        setCover(playback.cover);
 
-        const playResult = await fetchJsonWithRetry(
-          `https://api.bilibili.com/x/player/playurl?fnval=16&bvid=${encodeURIComponent(bvid)}&cid=${viewResult.data.cid}`,
-          controller.signal,
-        );
-        if (playResult.code !== 0 || !playResult.data?.dash) {
-          throw new Error(playResult.message || "获取 DASH 播放地址失败");
-        }
-
-        const manifest = createManifest(playResult.data.dash, isMusicMode);
+        const manifest = createManifest(playback.dash, isMusicMode);
         manifestUrl = URL.createObjectURL(new Blob([manifest], { type: "application/dash+xml" }));
         if (disposed) return;
 
@@ -270,7 +317,7 @@ export const BilibiliDashPlayer = ({
           // 浏览器可能要求用户再次点击播放控件，不影响已加载的视频。
         });
       } catch (loadError) {
-        if (controller.signal.aborted || disposed) return;
+        if (disposed) return;
         console.error("加载 Shaka DASH 视频失败:", loadError);
         setError(loadError instanceof Error ? loadError.message : "加载视频失败");
         setIsLoading(false);
@@ -281,7 +328,6 @@ export const BilibiliDashPlayer = ({
 
     return () => {
       disposed = true;
-      controller.abort();
       mediaElement.pause();
       void player?.destroy();
       if (manifestUrl) URL.revokeObjectURL(manifestUrl);

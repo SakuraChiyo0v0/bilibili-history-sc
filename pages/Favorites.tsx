@@ -338,6 +338,7 @@ export const Favorites = () => {
           onClose={() => setPlayingResource(null)}
           hasPrevious={playingResourceIndex > 0}
           hasNext={playingResourceIndex < playableResources.length - 1}
+          nextBvid={playableResources[playingResourceIndex + 1]?.bvid}
           onPrevious={() => setPlayingResource(playableResources[playingResourceIndex - 1])}
           onNext={() => setPlayingResource(playableResources[playingResourceIndex + 1])}
         />
