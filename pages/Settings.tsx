@@ -12,6 +12,7 @@ import {
   HIDDEN_MENUS,
   SYNC_PROGRESS_HISTORY,
   SYNC_PROGRESS_FAV,
+  SYNC_PROGRESS_COLLECTIONS,
   DATE_SELECTION_MODE,
   VIDEO_CLICK_MODES,
 } from "../utils/constants";
@@ -55,6 +56,11 @@ const Settings = () => {
     total: number;
     message: string;
   } | null>(null);
+  const [collectionsProgress, setCollectionsProgress] = useState<{
+    current: number;
+    total: number;
+    message: string;
+  } | null>(null);
 
   const [showResetResultDialog, setShowResetResultDialog] = useState(false);
   const [resetResult, setResetResult] = useState("");
@@ -88,6 +94,7 @@ const Settings = () => {
 
       const histProg = await getStorageValue(SYNC_PROGRESS_HISTORY, null);
       const favProg = await getStorageValue(SYNC_PROGRESS_FAV, null);
+      const collectionsProg = await getStorageValue(SYNC_PROGRESS_COLLECTIONS, null);
 
       setIsSyncDelete(syncDelete);
       setIsSyncDeleteFromBilibili(syncDeleteFromBilibili);
@@ -101,6 +108,7 @@ const Settings = () => {
 
       setHistoryProgress(histProg);
       setFavProgress(favProg);
+      setCollectionsProgress(collectionsProg);
     };
     loadSettings();
 
@@ -118,6 +126,15 @@ const Settings = () => {
         if (changes[SYNC_PROGRESS_FAV]) {
           setFavProgress(
             changes[SYNC_PROGRESS_FAV].newValue as {
+              current: number;
+              total: number;
+              message: string;
+            } | null,
+          );
+        }
+        if (changes[SYNC_PROGRESS_COLLECTIONS]) {
+          setCollectionsProgress(
+            changes[SYNC_PROGRESS_COLLECTIONS].newValue as {
               current: number;
               total: number;
               message: string;
@@ -382,6 +399,39 @@ const Settings = () => {
               title={favProgress.message}
             >
               {favProgress.message}
+            </p>
+          </div>
+        </div>
+      )}
+
+      {collectionsProgress && collectionsProgress.message && (
+        <div className="w-full max-w-md mb-8 p-4 bg-emerald-50 dark:bg-emerald-500/10 border border-emerald-200 dark:border-emerald-500/20 rounded-lg animate-in fade-in duration-300">
+          <div>
+            <div className="flex justify-between items-center mb-2">
+              <span className="font-medium text-emerald-800 dark:text-emerald-300">
+                订阅合集同步中
+              </span>
+              <span className="text-xs text-emerald-600 dark:text-emerald-300 font-bold">
+                {collectionsProgress.total > 0
+                  ? `${collectionsProgress.current} / ${collectionsProgress.total}`
+                  : `${collectionsProgress.current}`}
+              </span>
+            </div>
+            {collectionsProgress.total > 0 && (
+              <div className="w-full bg-emerald-100 dark:bg-emerald-900/40 rounded-full h-2 mb-3 overflow-hidden">
+                <div
+                  className="bg-emerald-500 h-2 rounded-full transition-all duration-300"
+                  style={{
+                    width: `${Math.min(
+                      100,
+                      (collectionsProgress.current / collectionsProgress.total) * 100,
+                    )}%`,
+                  }}
+                />
+              </div>
+            )}
+            <p className="text-sm text-emerald-600 dark:text-emerald-300">
+              {collectionsProgress.message}
             </p>
           </div>
         </div>

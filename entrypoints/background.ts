@@ -11,6 +11,7 @@ import {
   FAV_SYNC_TIME_REMAIN,
   SYNC_PROGRESS_HISTORY,
   SYNC_PROGRESS_FAV,
+  SYNC_PROGRESS_COLLECTIONS,
   HIDDEN_MENUS,
   WEBDAV_CONFIG,
   WEBDAV_LAST_SYNC,
@@ -973,9 +974,43 @@ export default defineBackground(() => {
   async function syncAllSubscribedCollectionResources(): Promise<void> {
     await syncSubscribedCollections();
     const collections = await getAllSubscribedCollections();
+    const totalItems = collections.reduce((total, collection) => total + collection.media_count, 0);
+    let currentSynced = 0;
 
-    for (const collection of collections) {
-      await syncSubscribedCollectionResources(collection.id);
+    await setStorageValue(SYNC_PROGRESS_COLLECTIONS, {
+      current: currentSynced,
+      total: totalItems,
+      message: "开始同步订阅合集...",
+    });
+
+    try {
+      for (const collection of collections) {
+        await setStorageValue(SYNC_PROGRESS_COLLECTIONS, {
+          current: currentSynced,
+          total: totalItems,
+          message: `正在同步: ${collection.title}`,
+        });
+        const synced = await syncSubscribedCollectionResources(collection.id);
+        if (synced) currentSynced += collection.media_count;
+        await setStorageValue(SYNC_PROGRESS_COLLECTIONS, {
+          current: currentSynced,
+          total: totalItems,
+          message: `正在同步: ${collection.title}`,
+        });
+      }
+
+      await setStorageValue(SYNC_PROGRESS_COLLECTIONS, {
+        current: currentSynced,
+        total: totalItems,
+        message: "订阅合集同步完成",
+      });
+    } catch (error) {
+      await setStorageValue(SYNC_PROGRESS_COLLECTIONS, {
+        current: currentSynced,
+        total: totalItems,
+        message: `同步失败: ${error instanceof Error ? error.message : "未知错误"}`,
+      });
+      throw error;
     }
   }
 
