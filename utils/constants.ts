@@ -21,6 +21,7 @@ export const SYNC_PROGRESS_HISTORY = "syncProgressHistory";
 export const SYNC_PROGRESS_FAV = "syncProgressFav";
 export const DATE_SELECTION_MODE = "date_selection_mode";
 export const GRID_COLUMNS = "gridColumns";
+export const VIDEO_CLICK_MODES = "videoClickModes";
 export const LAST_SEEN_UPDATE_VERSION = "lastSeenUpdateVersion";
 
 // WebDAV 同步相关

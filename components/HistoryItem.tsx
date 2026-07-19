@@ -7,10 +7,13 @@ import { getStorageValue } from "../utils/storage";
 import { toast } from "react-hot-toast";
 import { IS_SYNC_DELETE } from "../utils/constants";
 import { getTypeTag } from "../utils/common";
+import { VideoClickMode } from "../hooks/useVideoClickMode";
+import { BilibiliDashPlayer } from "./BilibiliDashPlayer";
 
 interface HistoryItemProps {
   item: HistoryItemType;
   onDelete?: () => void;
+  videoClickMode: VideoClickMode;
 }
 
 const deleteBilibiliHistory = async (business: string, id: number): Promise<void> => {
@@ -57,8 +60,9 @@ const deleteBilibiliHistory = async (business: string, id: number): Promise<void
   }
 };
 
-export const HistoryItem: React.FC<HistoryItemProps> = ({ item, onDelete }) => {
+export const HistoryItem: React.FC<HistoryItemProps> = ({ item, onDelete, videoClickMode }) => {
   const [isFav, setIsFav] = useState(item.is_fav === true);
+  const [isPlayerOpen, setIsPlayerOpen] = useState(false);
 
   useEffect(() => {
     if (item.is_fav === true) return;
@@ -116,6 +120,11 @@ export const HistoryItem: React.FC<HistoryItemProps> = ({ item, onDelete }) => {
         href={getContentUrl(item)}
         target="_blank"
         rel="noopener noreferrer"
+        onClick={(event) => {
+          if (videoClickMode !== "player" || item.business !== "archive" || !item.bvid) return;
+          event.preventDefault();
+          setIsPlayerOpen(true);
+        }}
         className="no-underline text-inherit"
       >
         <div>
@@ -197,6 +206,13 @@ export const HistoryItem: React.FC<HistoryItemProps> = ({ item, onDelete }) => {
           </div>
         </div>
       </a>
+      {isPlayerOpen && (
+        <BilibiliDashPlayer
+          bvid={item.bvid}
+          title={item.title}
+          onClose={() => setIsPlayerOpen(false)}
+        />
+      )}
     </div>
   );
 };

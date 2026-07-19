@@ -3,6 +3,8 @@ import { getFavFolders, getFavResources } from "../utils/db";
 import { FavoriteFolder, FavoriteResource } from "../utils/types";
 import { Folder, Video, Search, X, ChevronDownIcon } from "lucide-react";
 import { Pagination } from "../components/Pagination";
+import { BilibiliDashPlayer } from "../components/BilibiliDashPlayer";
+import { useVideoClickMode } from "../hooks/useVideoClickMode";
 
 export const Favorites = () => {
   const [folders, setFolders] = useState<FavoriteFolder[]>([]);
@@ -13,6 +15,8 @@ export const Favorites = () => {
   const [keyword, setKeyword] = useState("");
   const [searchType, setSearchType] = useState<"all" | "title" | "up" | "bvid" | "avid">("all");
   const [isSearchKindDropdownOpen, setIsSearchKindDropdownOpen] = useState(false);
+  const [playingResource, setPlayingResource] = useState<FavoriteResource | null>(null);
+  const videoClickMode = useVideoClickMode("favorites");
   const pageSize = 50;
 
   const contentRef = useRef<HTMLDivElement>(null);
@@ -249,6 +253,11 @@ export const Favorites = () => {
                         href={`https://www.bilibili.com/video/${item.bvid}`}
                         target="_blank"
                         rel="noopener noreferrer"
+                        onClick={(event) => {
+                          if (videoClickMode !== "player" || !item.bvid) return;
+                          event.preventDefault();
+                          setPlayingResource(item);
+                        }}
                         className="no-underline text-inherit flex flex-col h-full"
                       >
                         <div>
@@ -313,6 +322,13 @@ export const Favorites = () => {
           </div>
         </div>
       </div>
+      {playingResource && (
+        <BilibiliDashPlayer
+          bvid={playingResource.bvid}
+          title={playingResource.title}
+          onClose={() => setPlayingResource(null)}
+        />
+      )}
     </div>
   );
 };
