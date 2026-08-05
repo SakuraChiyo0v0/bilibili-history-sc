@@ -25,6 +25,9 @@ export const GRID_COLUMNS = "gridColumns";
 export const VIDEO_CLICK_MODES = "videoClickModes";
 export const LAST_SEEN_UPDATE_VERSION = "lastSeenUpdateVersion";
 
+// 仅全新安装时设为 false；旧版本升级时缺少该键，按已完成处理
+export const INITIAL_SETUP_COMPLETED = "initialSetupCompleted";
+
 // WebDAV 同步相关
 export const WEBDAV_CONFIG = "webdavConfig";
 export const WEBDAV_LAST_SYNC = "webdavLastSync";

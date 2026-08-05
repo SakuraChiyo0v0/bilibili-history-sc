@@ -1,237 +1,201 @@
-import { useState, useEffect } from "react";
+import { useEffect, useState } from "react";
+import { CloudDownload, Download, HardDrive, ShieldCheck } from "lucide-react";
 import { useNavigate } from "react-router-dom";
-import { getStorageValue } from "../utils/storage";
-import { SYNC_PROGRESS_HISTORY, SYNC_PROGRESS_FAV, UPDATE_HISTORY } from "../utils/constants";
+import { getStorageValue, setStorageValue } from "../utils/storage";
+import {
+  INITIAL_SETUP_COMPLETED,
+  SYNC_PROGRESS_FAV,
+  SYNC_PROGRESS_HISTORY,
+} from "../utils/constants";
+
+interface HistoryProgress {
+  current: number;
+  message: string;
+}
+
+interface FavoriteProgress {
+  current: number;
+  total?: number;
+  message: string;
+}
+
+interface SyncResponse {
+  success?: boolean;
+  error?: string;
+}
 
 const Welcome = () => {
   const navigate = useNavigate();
-  const [historyProgress, setHistoryProgress] = useState<{
-    current: number;
-    message: string;
-  } | null>(null);
-  const [favProgress, setFavProgress] = useState<{
-    current: number;
-    total?: number;
-    message: string;
-  } | null>(null);
-  const [version, setVersion] = useState<string>("");
+  const [isStartingLocal, setIsStartingLocal] = useState(false);
+  const [error, setError] = useState("");
+  const [historyProgress, setHistoryProgress] = useState<HistoryProgress | null>(null);
+  const [favProgress, setFavProgress] = useState<FavoriteProgress | null>(null);
 
   useEffect(() => {
     const loadProgress = async () => {
-      const h = await getStorageValue(SYNC_PROGRESS_HISTORY, null);
-      const f = await getStorageValue(SYNC_PROGRESS_FAV, null);
-      setHistoryProgress(h);
-      setFavProgress(f);
+      setHistoryProgress(await getStorageValue(SYNC_PROGRESS_HISTORY, null));
+      setFavProgress(await getStorageValue(SYNC_PROGRESS_FAV, null));
     };
     loadProgress();
 
     const handleStorageChange = (
-      changes: { [key: string]: Browser.storage.StorageChange },
+      changes: Record<string, Browser.storage.StorageChange>,
       areaName: string,
     ) => {
-      if (areaName === "local") {
-        if (changes[SYNC_PROGRESS_HISTORY]) {
-          setHistoryProgress(
-            changes[SYNC_PROGRESS_HISTORY].newValue as { current: number; message: string } | null,
-          );
-        }
-        if (changes[SYNC_PROGRESS_FAV]) {
-          setFavProgress(
-            changes[SYNC_PROGRESS_FAV].newValue as {
-              current: number;
-              total: number;
-              message: string;
-            } | null,
-          );
-        }
+      if (areaName !== "local") return;
+      if (changes[SYNC_PROGRESS_HISTORY]) {
+        setHistoryProgress(changes[SYNC_PROGRESS_HISTORY].newValue as HistoryProgress | null);
+      }
+      if (changes[SYNC_PROGRESS_FAV]) {
+        setFavProgress(changes[SYNC_PROGRESS_FAV].newValue as FavoriteProgress | null);
       }
     };
 
     browser.storage.onChanged.addListener(handleStorageChange);
-
-    // Get version
-    const manifest = browser?.runtime?.getManifest?.();
-    if (manifest?.version) {
-      setVersion(manifest.version);
-    }
-
-    return () => {
-      browser.storage.onChanged.removeListener(handleStorageChange);
-    };
+    return () => browser.storage.onChanged.removeListener(handleStorageChange);
   }, []);
 
+  const startLocalSync = async () => {
+    setIsStartingLocal(true);
+    setError("");
+
+    try {
+      const [historyResult, favoritesResult] = await Promise.all([
+        browser.runtime.sendMessage({ action: "syncHistory" }) as Promise<SyncResponse>,
+        browser.runtime.sendMessage({ action: "syncFavorites" }) as Promise<SyncResponse>,
+      ]);
+
+      const errors = [historyResult, favoritesResult]
+        .filter((result) => !result?.success)
+        .map((result) => result?.error || "未知错误");
+      if (errors.length > 0) throw new Error(errors.join("；"));
+
+      await setStorageValue(INITIAL_SETUP_COMPLETED, true);
+      window.location.replace(browser.runtime.getURL("/my-history.html"));
+    } catch (syncError) {
+      setError(syncError instanceof Error ? syncError.message : "初始化失败，请稍后重试");
+    } finally {
+      setIsStartingLocal(false);
+    }
+  };
+
+  const favoritePercent =
+    favProgress?.total && favProgress.total > 0
+      ? Math.min(100, Math.round((favProgress.current / favProgress.total) * 100))
+      : 0;
+
   return (
-    <div className="flex flex-col items-center min-h-[80vh] bg-white p-6 rounded-xl shadow-sm m-4 max-w-[800px] mx-auto">
-      <h1 className="text-3xl font-bold text-gray-800 mb-2">欢迎使用 Bilibili History</h1>
-      <p className="text-gray-500 mb-8 text-center max-w-lg">
-        插件正在为您初始化数据，同步您的历史记录和收藏夹。您可以随时开始使用，同步将在后台继续进行。
-      </p>
-
-      <div className="w-full max-w-md space-y-6 mb-10">
-        {/* History Sync Status */}
-        <div className="bg-blue-50 border border-blue-100 rounded-lg p-5 transition-all hover:shadow-md">
-          <div className="flex justify-between items-center mb-2">
-            <span className="font-semibold text-blue-800 flex items-center gap-2">
-              <span className="w-2 h-2 rounded-full bg-blue-500 animate-pulse"></span>
-              历史记录同步
-            </span>
-            <span className="text-xs font-mono text-blue-600 bg-white px-2 py-1 rounded shadow-sm border border-blue-100">
-              {historyProgress?.current || 0} 条
-            </span>
+    <main className="min-h-screen bg-gradient-to-br from-sky-50 via-white to-pink-50 px-5 py-10 dark:from-neutral-950 dark:via-neutral-950 dark:to-slate-950">
+      <div className="mx-auto flex min-h-[calc(100vh-5rem)] max-w-4xl flex-col justify-center">
+        <div className="mb-9 text-center">
+          <div className="mx-auto mb-5 flex h-16 w-16 items-center justify-center rounded-2xl bg-[#00a1d6] text-white shadow-lg shadow-sky-200 dark:shadow-none">
+            <HardDrive className="h-8 w-8" />
           </div>
-          <p className="text-sm text-blue-600/80 truncate font-medium">
-            {historyProgress?.message || "准备中..."}
+          <h1 className="text-3xl font-bold tracking-tight text-gray-900 dark:text-white sm:text-4xl">
+            欢迎使用 Bilibili 无限历史记录
+          </h1>
+          <p className="mx-auto mt-3 max-w-2xl text-sm leading-6 text-gray-500 dark:text-neutral-400 sm:text-base">
+            先选择数据来源。扩展会等你确认后再开始请求，重新安装时不会自动全量拉取 B 站数据。
           </p>
         </div>
 
-        {/* Fav Sync Status */}
-        <div className="bg-purple-50 border border-purple-100 rounded-lg p-5 transition-all hover:shadow-md">
-          <div className="flex justify-between items-center mb-3">
-            <span className="font-semibold text-purple-800 flex items-center gap-2">
-              <span className="w-2 h-2 rounded-full bg-purple-500 animate-pulse"></span>
-              收藏夹同步
+        <div className="grid gap-5 md:grid-cols-2">
+          <button
+            type="button"
+            onClick={startLocalSync}
+            disabled={isStartingLocal}
+            className="group rounded-2xl border border-sky-200 bg-white p-6 text-left shadow-sm transition hover:-translate-y-1 hover:border-sky-400 hover:shadow-xl disabled:cursor-wait disabled:opacity-70 dark:border-sky-500/20 dark:bg-neutral-900 dark:hover:border-sky-500/50"
+          >
+            <span className="mb-5 flex h-12 w-12 items-center justify-center rounded-xl bg-sky-100 text-sky-600 dark:bg-sky-500/10 dark:text-sky-400">
+              <Download className={`h-6 w-6 ${isStartingLocal ? "animate-bounce" : ""}`} />
             </span>
-            <span className="text-xs font-mono text-purple-600 bg-white px-2 py-1 rounded shadow-sm border border-purple-100">
-              {/* Display Fetched / Total if total is available, else just current */}
-              {favProgress?.total && favProgress.total > 0
-                ? `${favProgress.current} / ${favProgress.total}`
-                : favProgress?.current || 0}
+            <span className="block text-xl font-bold text-gray-900 dark:text-white">
+              {isStartingLocal ? "正在拉取本地数据..." : "从 B 站开始"}
             </span>
-          </div>
+            <span className="mt-2 block text-sm leading-6 text-gray-500 dark:text-neutral-400">
+              首次全量拉取观看历史和收藏夹并保存到本机，之后只进行增量同步。
+            </span>
+            <span className="mt-5 inline-flex items-center text-sm font-semibold text-sky-600 dark:text-sky-400">
+              适合首次使用
+              <span className="ml-1 transition-transform group-hover:translate-x-1">→</span>
+            </span>
+          </button>
 
-          {favProgress?.total && favProgress.total > 0 && (
-            <div className="w-full bg-purple-200/50 rounded-full h-2.5 mb-2 overflow-hidden">
-              <div
-                className="bg-purple-500 h-2.5 rounded-full transition-all duration-500 ease-out shadow-[0_0_10px_rgba(168,85,247,0.4)]"
-                style={{
-                  width: `${Math.min(100, (favProgress.current / favProgress.total) * 100)}%`,
-                }}
-              ></div>
-            </div>
-          )}
-
-          <p className="text-sm text-purple-600/80 truncate font-medium">
-            {favProgress?.message || "准备中..."}
-          </p>
+          <button
+            type="button"
+            onClick={() => navigate("/webdav-sync?onboarding=1")}
+            disabled={isStartingLocal}
+            className="group rounded-2xl border border-pink-200 bg-white p-6 text-left shadow-sm transition hover:-translate-y-1 hover:border-pink-400 hover:shadow-xl disabled:opacity-70 dark:border-pink-500/20 dark:bg-neutral-900 dark:hover:border-pink-500/50"
+          >
+            <span className="mb-5 flex h-12 w-12 items-center justify-center rounded-xl bg-pink-100 text-pink-600 dark:bg-pink-500/10 dark:text-pink-400">
+              <CloudDownload className="h-6 w-6" />
+            </span>
+            <span className="block text-xl font-bold text-gray-900 dark:text-white">
+              从 WebDAV 恢复
+            </span>
+            <span className="mt-2 block text-sm leading-6 text-gray-500 dark:text-neutral-400">
+              先配置你的 WebDAV 服务，再下载云端历史、收藏夹、音乐和偏好设置。
+            </span>
+            <span className="mt-5 inline-flex items-center text-sm font-semibold text-pink-600 dark:text-pink-400">
+              适合已有云端备份
+              <span className="ml-1 transition-transform group-hover:translate-x-1">→</span>
+            </span>
+          </button>
         </div>
-      </div>
 
-      <button
-        onClick={() => navigate("/")}
-        className="px-10 py-3 bg-blue-600 text-white rounded-xl font-semibold shadow-lg hover:shadow-xl hover:bg-blue-700 transform hover:-translate-y-0.5 transition-all duration-200 active:translate-y-0 active:shadow-md mb-12"
-      >
-        进入首页
-      </button>
-
-      {/* About Page Content */}
-      <div className="w-full border-t border-gray-100 pt-10">
-        <div className="space-y-8 text-left">
-          <section>
-            <h2 className="text-xl font-semibold mb-3 text-gray-800">官网</h2>
-            <a
-              href="https://bilibilihistory.com"
-              target="_blank"
-              className="text-pink-400 font-semibold text-lg transition-all duration-200 hover:text-pink-500"
-            >
-              bilibilihistory.com
-            </a>
-          </section>
-
-          <section>
-            <h2 className="text-xl font-semibold mb-3 text-gray-800">简介</h2>
-            <div className="text-gray-600 text-base space-y-4">
-              <p>
-                由于b站本身的历史记录有存储上限，而我希望可以查看更久远的历史记录，所以开发了这个扩展。
-              </p>
-            </div>
-          </section>
-
-          <section>
-            <h2 className="text-xl font-semibold mb-3 text-gray-800">功能特点</h2>
-            <ul className="list-disc list-inside text-gray-600 space-y-2 text-base">
-              <li>突破 Bilibili 历史记录的数量限制</li>
-              <li>支持按时间排序浏览历史记录</li>
-              <li>支持搜索历史记录</li>
-              <li>每隔1分钟自动增量的同步一次历史记录</li>
-              <li>所有数据都存储在本地indexedDB</li>
-            </ul>
-          </section>
-
-          <section>
-            <h2 className="text-xl font-semibold mb-3 text-gray-800">使用说明</h2>
-            <ol className="list-decimal list-inside text-gray-600 space-y-2 text-base">
-              <li>登录b站网页版</li>
-              <li>安装扩展后，点击扩展图标</li>
-              <li>首次点击立即同步按钮会全量同步你的 Bilibili 观看历史</li>
-              <li>同步完成后，点击打开历史记录页面按钮，即可查看历史记录</li>
-              <li>可以使用搜索框搜索特定的历史记录</li>
-              <li>向下滚动可以加载更多历史记录</li>
-            </ol>
-          </section>
-
-          <section>
-            <h2 className="text-xl font-semibold mb-3 text-gray-800">隐私说明</h2>
-            <p className="text-gray-600 text-base">
-              本扩展仅用于同步和展示你的 Bilibili
-              观看历史，所有数据都存储在本地，不会上传到任何服务器。
-              我们不会收集任何个人信息或浏览数据。
-            </p>
-          </section>
-
-          <section>
-            <h2 className="text-xl font-semibold mb-3 text-gray-800">开源说明</h2>
-            <p className="text-gray-600 text-base">
-              本项目代码已开源，欢迎各位开发者贡献代码，让这个插件变得更好用。
-            </p>
-            <p className="text-gray-600 text-base mt-2">开源地址：</p>
-            <p className="text-lg mb-6 break-all">
-              <a
-                className="text-blue-500 hover:text-blue-600"
-                href="https://github.com/mundane799699/bilibili-history-wxt"
-                target="_blank"
-                rel="noopener noreferrer"
-              >
-                https://github.com/mundane799699/bilibili-history-wxt
-              </a>
-            </p>
-            <p className="text-lg mb-6 text-amber-600 bg-amber-50 p-4 rounded-lg border border-amber-100">
-              贡献突出者可以获得付费功能的免费使用权限。付费功能我在后续版本中会开发，比如数据云同步、AI加持等。
-            </p>
-            <p className="text-gray-600 text-base">目前积压的需求有很多，比如：</p>
-            <ul className="list-disc pl-5 mb-6 text-base text-gray-600 mt-2">
-              <li>标签功能</li>
-              <li>webdav同步</li>
-              <li>重命名功能</li>
-              <li>支持分页</li>
-            </ul>
-            <p className="text-base text-gray-600">
-              具体需求可以在github项目地址加我微信具体沟通。
-            </p>
-          </section>
-
-          <section>
-            <h2 className="text-xl font-semibold mb-3 text-gray-800">更新日志</h2>
-            <ul className="space-y-8">
-              {UPDATE_HISTORY.map((release) => (
-                <li key={release.version}>
-                  <div className="flex justify-between items-center mb-2">
-                    <h2 className="text-lg font-bold text-gray-700">{release.version}</h2>
-                    <span className="text-sm text-gray-500 bg-gray-100 px-2 py-1 rounded">
-                      {release.date}
-                    </span>
+        {isStartingLocal && (
+          <section className="mt-6 rounded-2xl border border-gray-200 bg-white p-5 shadow-sm dark:border-neutral-800 dark:bg-neutral-900">
+            <div className="grid gap-5 sm:grid-cols-2">
+              <div>
+                <div className="mb-2 flex items-center justify-between text-sm">
+                  <span className="font-semibold text-gray-700 dark:text-neutral-200">
+                    历史记录
+                  </span>
+                  <span className="text-sky-600 dark:text-sky-400">
+                    {historyProgress?.current || 0} 条
+                  </span>
+                </div>
+                <p className="truncate text-xs text-gray-500 dark:text-neutral-400">
+                  {historyProgress?.message || "正在准备..."}
+                </p>
+              </div>
+              <div>
+                <div className="mb-2 flex items-center justify-between text-sm">
+                  <span className="font-semibold text-gray-700 dark:text-neutral-200">收藏夹</span>
+                  <span className="text-pink-600 dark:text-pink-400">
+                    {favProgress?.total
+                      ? `${favProgress.current} / ${favProgress.total}`
+                      : `${favProgress?.current || 0} 条`}
+                  </span>
+                </div>
+                {favoritePercent > 0 && (
+                  <div className="mb-2 h-1.5 overflow-hidden rounded-full bg-pink-100 dark:bg-pink-500/10">
+                    <div
+                      className="h-full rounded-full bg-pink-500 transition-all"
+                      style={{ width: `${favoritePercent}%` }}
+                    />
                   </div>
-                  <ul className="list-disc list-inside text-gray-600 space-y-2 text-base pl-2">
-                    {release.changes.map((change, index) => (
-                      <li key={index}>{change}</li>
-                    ))}
-                  </ul>
-                </li>
-              ))}
-            </ul>
+                )}
+                <p className="truncate text-xs text-gray-500 dark:text-neutral-400">
+                  {favProgress?.message || "正在准备..."}
+                </p>
+              </div>
+            </div>
           </section>
+        )}
+
+        {error && (
+          <div className="mt-6 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700 dark:border-red-500/20 dark:bg-red-500/10 dark:text-red-300">
+            初始化失败：{error}
+          </div>
+        )}
+
+        <div className="mt-7 flex items-center justify-center gap-2 text-xs text-gray-400 dark:text-neutral-500">
+          <ShieldCheck className="h-4 w-4" />
+          数据仅保存在本机或你配置的 WebDAV 服务中
         </div>
       </div>
-    </div>
+    </main>
   );
 };
 

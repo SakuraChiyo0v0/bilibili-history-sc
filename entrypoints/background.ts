@@ -17,6 +17,7 @@ import {
   WEBDAV_LAST_SYNC,
   WEBDAV_AUTO_SYNC_ENABLED,
   WEBDAV_AUTO_SYNC_INTERVAL,
+  INITIAL_SETUP_COMPLETED,
 } from "../utils/constants";
 import {
   openDB,
@@ -52,8 +53,32 @@ import { SubscribedCollection, SubscribedCollectionResource } from "../utils/typ
 export default defineBackground(() => {
   console.log("Hello background!", { id: browser.runtime.id });
 
+  const fetchBilibiliApi = async (url: string, init: RequestInit = {}) => {
+    const headers = new Headers(init.headers);
+    if (!headers.has("Accept")) headers.set("Accept", "application/json, text/plain, */*");
+
+    const cookies = await browser.cookies.getAll({ domain: "bilibili.com" });
+    if (cookies.length > 0) {
+      headers.set("Cookie", cookies.map((cookie) => `${cookie.name}=${cookie.value}`).join("; "));
+    }
+
+    return fetch(url, {
+      ...init,
+      // 扩展页跨域请求默认不会附带站点 Cookie。显式携带完整登录态可避免
+      // 仅靠 SESSDATA 时被风控接口拒绝（例如 HTTP 412）。
+      credentials: "include",
+      cache: "no-store",
+      headers,
+    });
+  };
+
   // 初始化定时任务
   browser.runtime.onInstalled.addListener(async (details) => {
+    // 全新安装必须先由用户选择初始化方式，避免安装完成后立即大量请求 B 站接口。
+    if (details.reason === "install") {
+      await setStorageValue(INITIAL_SETUP_COMPLETED, false);
+    }
+
     // 设置每分钟同步一次
     browser.alarms.create("syncHistory", {
       periodInMinutes: 1,
@@ -67,50 +92,10 @@ export default defineBackground(() => {
       periodInMinutes: 1,
     });
 
-    // 只在首次安装时打开设置页面并执行初始化同步
+    // 只在首次安装时打开开始页面，等待用户主动选择数据来源
     if (details.reason === "install") {
       const url = browser.runtime.getURL("/my-history.html#/welcome");
-      browser.tabs.create({ url });
-
-      // 延迟执行，确保页面加载状态
-      setTimeout(async () => {
-        // 并行执行初始化同步
-        const initHistory = async () => {
-          await setStorageValue(IS_SYNCING, true);
-          await setStorageValue(SYNC_PROGRESS_HISTORY, {
-            current: 0,
-            message: "正在初始化同步...",
-          });
-          try {
-            await syncHistory(true);
-          } catch (e) {
-            console.error("History init failed", e);
-          } finally {
-            await setStorageValue(IS_SYNCING, false);
-            await setStorageValue(SYNC_PROGRESS_HISTORY, { current: 0, message: "初始化同步完成" });
-          }
-        };
-        const initFav = async () => {
-          await setStorageValue(IS_SYNCING_FAV, true);
-          // Initial placeholder
-          await setStorageValue(SYNC_PROGRESS_FAV, {
-            current: 0,
-            total: 0,
-            message: "正在初始化收藏夹...",
-          });
-          try {
-            await syncFavorites(true);
-            await setStorageValue(HAS_FULL_FAV_SYNC, true);
-          } catch (e) {
-            console.error("Fav init failed", e);
-          } finally {
-            await setStorageValue(IS_SYNCING_FAV, false);
-            // Completion state will be handled inside syncFavorites too, but good to ensure
-          }
-        };
-        initHistory();
-        initFav();
-      }, 1000);
+      await browser.tabs.create({ url });
     }
   });
 
@@ -167,6 +152,12 @@ export default defineBackground(() => {
 
   // 监听定时任务
   browser.alarms.onAlarm.addListener(async (alarm) => {
+    const initialSetupCompleted = await getStorageValue(INITIAL_SETUP_COMPLETED, true);
+    if (!initialSetupCompleted) {
+      console.log("首次设置尚未完成，跳过自动同步");
+      return;
+    }
+
     if (alarm.name === "syncHistory") {
       // 获取同步间隔
       const syncInterval = await getStorageValue(SYNC_INTERVAL, 1);
@@ -256,6 +247,7 @@ export default defineBackground(() => {
       if (forceFullSync) {
         // 如果前端强制要求全量同步
         await syncHistory(true);
+        await setStorageValue(HAS_FULL_SYNC, true);
         syncResult = "全量同步成功";
         sendResponse({ success: true, message: syncResult });
       } else {

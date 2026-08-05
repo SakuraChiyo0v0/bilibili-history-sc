@@ -1,15 +1,24 @@
 import { useState, useEffect } from "react";
 import "./App.css";
 import { Toaster } from "react-hot-toast";
+import { INITIAL_SETUP_COMPLETED } from "../../utils/constants";
+import { getStorageValue } from "../../utils/storage";
 function App() {
   const [isSyncing, setIsSyncing] = useState(false);
   const [isSyncingFav, setIsSyncingFav] = useState(false);
   const [status, setStatus] = useState("");
   const [isFullSync, setIsFullSync] = useState(false);
+  const [setupRequired, setSetupRequired] = useState(false);
 
   useEffect(() => {
     // 检查同步状态
     const checkSyncStatus = async () => {
+      const setupCompleted = await getStorageValue(INITIAL_SETUP_COMPLETED, true);
+      setSetupRequired(!setupCompleted);
+      if (!setupCompleted) {
+        setStatus("请先选择数据初始化方式");
+        return;
+      }
       const result = await browser.storage.local.get("lastSync");
       if (result.lastSync) {
         const lastSync = new Date(result.lastSync as string | number);
@@ -22,6 +31,7 @@ function App() {
   }, []);
 
   const handleSync = async () => {
+    if (setupRequired) return;
     setIsSyncing(true);
     setStatus("正在同步...");
 
@@ -44,6 +54,7 @@ function App() {
   };
 
   const handleSyncFav = async () => {
+    if (setupRequired) return;
     setIsSyncingFav(true);
     setStatus("正在同步收藏夹...");
 
@@ -73,24 +84,24 @@ function App() {
           className="w-full px-2 py-2 text-white bg-[#00a1d6] rounded hover:bg-[#0091c2] disabled:bg-gray-300 disabled:cursor-not-allowed"
           onClick={() => {
             browser.tabs.create({
-              url: "/my-history.html",
+              url: setupRequired ? "/my-history.html#/welcome" : "/my-history.html",
             });
           }}
           disabled={isSyncing}
         >
-          打开历史记录页面
+          {setupRequired ? "完成首次设置" : "打开历史记录页面"}
         </button>
         <button
           className="w-full px-2 py-2 text-white bg-[#00a1d6] rounded hover:bg-[#0091c2] disabled:bg-gray-300 disabled:cursor-not-allowed"
           onClick={handleSync}
-          disabled={isSyncing}
+          disabled={isSyncing || setupRequired}
         >
           {isSyncing ? "同步中..." : "同步历史记录"}
         </button>
         <button
           className="w-full px-2 py-2 text-white bg-[#fb7299] rounded hover:bg-[#e05a80] disabled:bg-gray-300 disabled:cursor-not-allowed"
           onClick={handleSyncFav}
-          disabled={isSyncing || isSyncingFav}
+          disabled={isSyncing || isSyncingFav || setupRequired}
         >
           {isSyncingFav ? "收藏夹同步中..." : "同步收藏夹"}
         </button>
@@ -100,7 +111,7 @@ function App() {
             id="fullSync"
             checked={isFullSync}
             onChange={(e) => setIsFullSync(e.target.checked)}
-            disabled={isSyncing}
+            disabled={isSyncing || setupRequired}
             className="w-4 h-4 text-[#00a1d6] bg-gray-100 border-gray-300 rounded focus:ring-[#00a1d6] focus:ring-2"
           />
           <label
