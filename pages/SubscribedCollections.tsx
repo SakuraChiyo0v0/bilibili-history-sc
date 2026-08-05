@@ -4,7 +4,7 @@ import { getSubscribedCollectionResources, getSubscribedCollections } from "../u
 import { SubscribedCollection, SubscribedCollectionResource } from "../utils/types";
 import { ChevronDownIcon, LibraryBig, RefreshCw, Search, Trash2, X } from "lucide-react";
 import { Pagination } from "../components/Pagination";
-import { BilibiliDashPlayer } from "../components/BilibiliDashPlayer";
+import { useGlobalPlayer } from "../components/GlobalPlayerProvider";
 import { useVideoClickMode } from "../hooks/useVideoClickMode";
 import { ContextMenu } from "../components/ContextMenu";
 import { ActionDialog } from "../components/ActionDialog";
@@ -29,17 +29,16 @@ export const SubscribedCollections = () => {
   const [keyword, setKeyword] = useState("");
   const [searchType, setSearchType] = useState<SearchType>("all");
   const [isSearchKindDropdownOpen, setIsSearchKindDropdownOpen] = useState(false);
-  const [playingResource, setPlayingResource] = useState<SubscribedCollectionResource | null>(null);
   const [contextMenu, setContextMenu] = useState<{
     x: number;
     y: number;
     collection: SubscribedCollection;
   } | null>(null);
-  const [collectionToUnsubscribe, setCollectionToUnsubscribe] = useState<SubscribedCollection | null>(
-    null,
-  );
+  const [collectionToUnsubscribe, setCollectionToUnsubscribe] =
+    useState<SubscribedCollection | null>(null);
   const [isUnsubscribing, setIsUnsubscribing] = useState(false);
   const videoClickMode = useVideoClickMode("collections");
+  const { playTracks } = useGlobalPlayer();
   const contentRef = useRef<HTMLDivElement>(null);
   const selectedCollectionIdRef = useRef<number | null>(null);
   const resourceSyncRequestIdRef = useRef(0);
@@ -89,7 +88,6 @@ export const SubscribedCollections = () => {
       const response = await browser.runtime.sendMessage({
         action: "syncSubscribedCollectionResources",
         collectionId: collection.id,
-        mid: collection.mid,
       });
       if (!response?.success) throw new Error(response?.error || "同步合集内容失败");
       await loadResources(collection.id);
@@ -115,11 +113,12 @@ export const SubscribedCollections = () => {
       );
       setCollections(remainingCollections);
       setSelectedCollectionId((currentId) =>
-        currentId === collectionToUnsubscribe.id ? (remainingCollections[0]?.id ?? null) : currentId,
+        currentId === collectionToUnsubscribe.id
+          ? (remainingCollections[0]?.id ?? null)
+          : currentId,
       );
       if (selectedCollectionId === collectionToUnsubscribe.id) {
         setResources([]);
-        setPlayingResource(null);
       }
       toast.success("已取消订阅合集");
       setCollectionToUnsubscribe(null);
@@ -174,15 +173,13 @@ export const SubscribedCollections = () => {
   const startIndex = (currentPage - 1) * pageSize;
   const currentResources = filteredResources.slice(startIndex, startIndex + pageSize);
   const playableResources = filteredResources.filter((item) => Boolean(item.bvid));
-  const playingResourceIndex = playingResource
-    ? playableResources.findIndex((item) => item.id === playingResource.id)
-    : -1;
+  const playerTracks = playableResources.map((item) => ({
+    id: `collection:${item.collection_id}:${item.id}`,
+    bvid: item.bvid,
+    title: item.title,
+  }));
   const searchLabel =
     SEARCH_OPTIONS.find((option) => option.value === searchType)?.label || "综合搜索";
-
-  useEffect(() => {
-    if (playingResource && playingResourceIndex === -1) setPlayingResource(null);
-  }, [playingResource, playingResourceIndex]);
 
   return (
     <div className="flex h-screen bg-gray-50 dark:bg-[#0a0a0a]">
@@ -212,7 +209,6 @@ export const SubscribedCollections = () => {
               onClick={() => {
                 selectedCollectionIdRef.current = collection.id;
                 setSelectedCollectionId(collection.id);
-                setPlayingResource(null);
               }}
               onContextMenu={(event) => {
                 event.preventDefault();
@@ -360,7 +356,10 @@ export const SubscribedCollections = () => {
                         onClick={(event) => {
                           if (videoClickMode !== "player" || !item.bvid) return;
                           event.preventDefault();
-                          setPlayingResource(item);
+                          const index = playableResources.findIndex(
+                            (resource) => resource.id === item.id,
+                          );
+                          playTracks(playerTracks, index);
                         }}
                         className="border border-gray-200 dark:border-neutral-800 rounded-lg overflow-hidden flex flex-col bg-white dark:bg-neutral-900 hover:shadow-md transition-shadow no-underline text-inherit"
                       >
@@ -440,18 +439,6 @@ export const SubscribedCollections = () => {
         </div>
       </main>
 
-      {playingResource && (
-        <BilibiliDashPlayer
-          bvid={playingResource.bvid}
-          title={playingResource.title}
-          onClose={() => setPlayingResource(null)}
-          hasPrevious={playingResourceIndex > 0}
-          hasNext={playingResourceIndex < playableResources.length - 1}
-          nextBvid={playableResources[playingResourceIndex + 1]?.bvid}
-          onPrevious={() => setPlayingResource(playableResources[playingResourceIndex - 1])}
-          onNext={() => setPlayingResource(playableResources[playingResourceIndex + 1])}
-        />
-      )}
       <ContextMenu
         position={contextMenu ? { x: contextMenu.x, y: contextMenu.y } : null}
         onClose={() => setContextMenu(null)}

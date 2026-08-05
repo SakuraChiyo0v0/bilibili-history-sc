@@ -3,15 +3,14 @@ import { getFavFolders, getFavResources } from "../utils/db";
 import { FavoriteFolder, FavoriteResource } from "../utils/types";
 import { ArrowRightLeft, Folder, Pencil, Search, Trash2, X, ChevronDownIcon } from "lucide-react";
 import { Pagination } from "../components/Pagination";
-import { BilibiliDashPlayer } from "../components/BilibiliDashPlayer";
+import { useGlobalPlayer } from "../components/GlobalPlayerProvider";
 import { useVideoClickMode } from "../hooks/useVideoClickMode";
 import { ContextMenu } from "../components/ContextMenu";
 import { ActionDialog } from "../components/ActionDialog";
 import toast from "react-hot-toast";
 
 type FavoritesContextTarget =
-  | { type: "folder"; folder: FavoriteFolder }
-  | { type: "resource"; resource: FavoriteResource };
+  { type: "folder"; folder: FavoriteFolder } | { type: "resource"; resource: FavoriteResource };
 
 type FavoritesDialog =
   | { type: "edit-folder"; folder: FavoriteFolder }
@@ -28,7 +27,6 @@ export const Favorites = () => {
   const [keyword, setKeyword] = useState("");
   const [searchType, setSearchType] = useState<"all" | "title" | "up" | "bvid" | "avid">("all");
   const [isSearchKindDropdownOpen, setIsSearchKindDropdownOpen] = useState(false);
-  const [playingResource, setPlayingResource] = useState<FavoriteResource | null>(null);
   const [contextMenu, setContextMenu] = useState<{
     x: number;
     y: number;
@@ -39,6 +37,7 @@ export const Favorites = () => {
   const [targetFolderId, setTargetFolderId] = useState<number | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const videoClickMode = useVideoClickMode("favorites");
+  const { playTracks } = useGlobalPlayer();
   const pageSize = 50;
 
   const contentRef = useRef<HTMLDivElement>(null);
@@ -139,7 +138,6 @@ export const Favorites = () => {
         );
         if (selectedFolderId === dialog.folder.id) {
           setResources([]);
-          setPlayingResource(null);
         }
         toast.success("收藏夹已删除");
       } else if (dialog.type === "delete-resource") {
@@ -151,9 +149,6 @@ export const Favorites = () => {
         });
         if (!response?.success) throw new Error(response?.error || "移出收藏夹失败");
         setResources((current) => current.filter((resource) => resource.id !== dialog.resource.id));
-        setPlayingResource((current) =>
-          current?.id === dialog.resource.id ? null : current,
-        );
         toast.success("已移出当前收藏夹");
       } else {
         const response = await browser.runtime.sendMessage({
@@ -165,7 +160,6 @@ export const Favorites = () => {
         });
         if (!response?.success) throw new Error(response?.error || "移动收藏内容失败");
         setResources((current) => current.filter((resource) => resource.id !== dialog.resource.id));
-        setPlayingResource((current) => (current?.id === dialog.resource.id ? null : current));
         toast.success("内容已移动");
       }
       setDialog(null);
@@ -203,15 +197,13 @@ export const Favorites = () => {
   const startIndex = (currentPage - 1) * pageSize;
   const currentResources = filteredResources.slice(startIndex, startIndex + pageSize);
   const playableResources = filteredResources.filter((item) => Boolean(item.bvid));
+  const playerTracks = playableResources.map((item) => ({
+    id: `favorite:${item.folder_id}:${item.id}`,
+    bvid: item.bvid,
+    title: item.title,
+  }));
   const contextFolder = contextMenu?.target.type === "folder" ? contextMenu.target : null;
   const contextResource = contextMenu?.target.type === "resource" ? contextMenu.target : null;
-  const playingResourceIndex = playingResource
-    ? playableResources.findIndex((item) => item.id === playingResource.id)
-    : -1;
-
-  useEffect(() => {
-    if (playingResource && playingResourceIndex === -1) setPlayingResource(null);
-  }, [playingResource, playingResourceIndex]);
 
   return (
     <div className="flex h-screen bg-gray-50 dark:bg-[#0a0a0a]">
@@ -235,11 +227,14 @@ export const Favorites = () => {
               onClick={() => {
                 selectedFolderIdRef.current = folder.id;
                 setSelectedFolderId(folder.id);
-                setPlayingResource(null);
               }}
               onContextMenu={(event) => {
                 event.preventDefault();
-                setContextMenu({ x: event.clientX, y: event.clientY, target: { type: "folder", folder } });
+                setContextMenu({
+                  x: event.clientX,
+                  y: event.clientY,
+                  target: { type: "folder", folder },
+                });
               }}
             >
               <div className="font-medium truncate">{folder.title}</div>
@@ -377,7 +372,10 @@ export const Favorites = () => {
                         onClick={(event) => {
                           if (videoClickMode !== "player" || !item.bvid) return;
                           event.preventDefault();
-                          setPlayingResource(item);
+                          const index = playableResources.findIndex(
+                            (resource) => resource.id === item.id,
+                          );
+                          playTracks(playerTracks, index);
                         }}
                         className="no-underline text-inherit flex flex-col h-full"
                       >
@@ -443,18 +441,6 @@ export const Favorites = () => {
           </div>
         </div>
       </div>
-      {playingResource && (
-        <BilibiliDashPlayer
-          bvid={playingResource.bvid}
-          title={playingResource.title}
-          onClose={() => setPlayingResource(null)}
-          hasPrevious={playingResourceIndex > 0}
-          hasNext={playingResourceIndex < playableResources.length - 1}
-          nextBvid={playableResources[playingResourceIndex + 1]?.bvid}
-          onPrevious={() => setPlayingResource(playableResources[playingResourceIndex - 1])}
-          onNext={() => setPlayingResource(playableResources[playingResourceIndex + 1])}
-        />
-      )}
       <ContextMenu
         position={contextMenu ? { x: contextMenu.x, y: contextMenu.y } : null}
         onClose={() => setContextMenu(null)}
@@ -473,7 +459,8 @@ export const Favorites = () => {
                   label: "删除收藏夹",
                   icon: <Trash2 className="h-4 w-4" />,
                   danger: true,
-                  onSelect: () => setDialog({ type: "delete-folder", folder: contextFolder.folder }),
+                  onSelect: () =>
+                    setDialog({ type: "delete-folder", folder: contextFolder.folder }),
                 },
               ]
             : contextResource
@@ -492,10 +479,14 @@ export const Favorites = () => {
                           icon: <ArrowRightLeft className="h-4 w-4" />,
                           onSelect: () => {
                             setTargetFolderId(
-                              folders.find((folder) => folder.id !== contextResource.resource.folder_id)
-                                ?.id ?? null,
+                              folders.find(
+                                (folder) => folder.id !== contextResource.resource.folder_id,
+                              )?.id ?? null,
                             );
-                            setDialog({ type: "move-resource", resource: contextResource.resource });
+                            setDialog({
+                              type: "move-resource",
+                              resource: contextResource.resource,
+                            });
                           },
                         },
                       ]
@@ -522,7 +513,7 @@ export const Favorites = () => {
               ? `确定删除“${dialog.folder.title}”吗？其中的收藏内容也会从 B 站移除。`
               : dialog?.type === "move-resource"
                 ? "移动后，内容会从当前收藏夹移除。"
-              : "确定将此内容从当前收藏夹移除吗？不会影响视频本身。"
+                : "确定将此内容从当前收藏夹移除吗？不会影响视频本身。"
         }
         confirmLabel={dialog?.type === "edit-folder" ? "保存" : "确认操作"}
         isDanger={dialog?.type === "delete-folder" || dialog?.type === "delete-resource"}

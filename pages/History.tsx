@@ -8,7 +8,7 @@ import { DATE_SELECTION_MODE, GRID_COLUMNS } from "../utils/constants";
 import { DateRangePicker } from "../components/DateRangePicker";
 import { getStorageValue, setStorageValue } from "../utils/storage";
 import { useVideoClickMode } from "../hooks/useVideoClickMode";
-import { BilibiliDashPlayer } from "../components/BilibiliDashPlayer";
+import { useGlobalPlayer } from "../components/GlobalPlayerProvider";
 
 export const History: React.FC = () => {
   const [history, setHistory] = useState<HistoryItemType[]>([]);
@@ -28,8 +28,8 @@ export const History: React.FC = () => {
   const [totalHistoryCount, setTotalHistoryCount] = useState(0);
   const [dateSelectionMode, setDateSelectionMode] = useState<"range" | "single">("range");
   const [gridColumns, setGridColumns] = useState(4);
-  const [playingHistoryItem, setPlayingHistoryItem] = useState<HistoryItemType | null>(null);
   const videoClickMode = useVideoClickMode("history");
+  const { playTracks } = useGlobalPlayer();
 
   const loadMoreRef = useRef<HTMLDivElement>(null);
   const observerRef = useRef<IntersectionObserver | null>(null);
@@ -172,15 +172,11 @@ export const History: React.FC = () => {
   const playableHistory = history.filter(
     (item) => item.business === "archive" && Boolean(item.bvid),
   );
-  const playingHistoryIndex = playingHistoryItem
-    ? playableHistory.findIndex(
-        (item) => item.id === playingHistoryItem.id && item.view_at === playingHistoryItem.view_at,
-      )
-    : -1;
-
-  useEffect(() => {
-    if (playingHistoryItem && playingHistoryIndex === -1) setPlayingHistoryItem(null);
-  }, [playingHistoryItem, playingHistoryIndex]);
+  const playerTracks = playableHistory.map((item) => ({
+    id: `history:${item.id}:${item.view_at}`,
+    bvid: item.bvid,
+    title: item.title,
+  }));
 
   return (
     <div>
@@ -378,11 +374,15 @@ export const History: React.FC = () => {
             key={`${item.id}-${item.view_at}`}
             item={item}
             videoClickMode={videoClickMode}
-            onPlay={() => setPlayingHistoryItem(item)}
+            onPlay={() => {
+              const index = playableHistory.findIndex(
+                (historyItem) => historyItem.id === item.id && historyItem.view_at === item.view_at,
+              );
+              playTracks(playerTracks, index);
+            }}
             onDelete={() => {
               setHistory((prev) => prev.filter((i) => i.id !== item.id));
               setTotalHistoryCount((prev) => prev - 1);
-              setPlayingHistoryItem((current) => (current?.id === item.id ? null : current));
             }}
           />
         ))}
@@ -419,18 +419,6 @@ export const History: React.FC = () => {
             </button>
           )}
         </div>
-      )}
-      {playingHistoryItem && playingHistoryIndex >= 0 && (
-        <BilibiliDashPlayer
-          bvid={playingHistoryItem.bvid}
-          title={playingHistoryItem.title}
-          onClose={() => setPlayingHistoryItem(null)}
-          hasPrevious={playingHistoryIndex > 0}
-          hasNext={playingHistoryIndex < playableHistory.length - 1}
-          nextBvid={playableHistory[playingHistoryIndex + 1]?.bvid}
-          onPrevious={() => setPlayingHistoryItem(playableHistory[playingHistoryIndex - 1])}
-          onNext={() => setPlayingHistoryItem(playableHistory[playingHistoryIndex + 1])}
-        />
       )}
     </div>
   );
