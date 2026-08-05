@@ -6,6 +6,7 @@ import {
   SubscribedCollectionResource,
 } from "./types";
 import dayjs from "dayjs";
+import { recordStorageWarning } from "./storageHealth";
 
 const DB_CONFIG: DBConfig = {
   name: "bilibiliHistory",
@@ -42,7 +43,10 @@ export const openDB = (): Promise<IDBDatabase> => {
   return new Promise((resolve, reject) => {
     const request = indexedDB.open(DB_CONFIG.name, DB_CONFIG.version);
 
-    request.onerror = () => reject(request.error);
+    request.onerror = () => {
+      void recordStorageWarning(request.error, "open-history-database");
+      reject(request.error);
+    };
     request.onsuccess = () => resolve(request.result);
 
     request.onupgradeneeded = (event) => {
@@ -208,6 +212,7 @@ export const saveHistory = async (history: HistoryItem[]): Promise<void> => {
         if (!operationsFailed) {
           operationsFailed = true;
           console.error("向 IndexedDB 中 put 项目失败:", request.error, "项目:", item);
+          void recordStorageWarning(request.error, "save-history-item");
         }
       };
     });
@@ -223,6 +228,7 @@ export const saveHistory = async (history: HistoryItem[]): Promise<void> => {
 
     tx.onerror = () => {
       console.error("保存/更新历史记录事务失败:", tx.error);
+      void recordStorageWarning(tx.error, "save-history-transaction");
       reject(tx.error);
     };
   });
@@ -369,6 +375,48 @@ export const getHistory = async (
           items,
           hasMore,
         });
+      }
+    };
+
+    request.onerror = () => reject(request.error);
+  });
+};
+
+// offset-based pagination for the history page: one cursor pass collects
+// the requested page and counts all matched records for the paginator
+export const getHistoryPage = async (
+  page: number = 1,
+  pageSize: number = 20,
+  keyword: string = "",
+  dateRange: { start: string; end: string } | null = null,
+  businessType: string = "",
+  searchType: "all" | "title" | "up" | "bvid" | "avid" = "all",
+): Promise<{ items: HistoryItem[]; total: number }> => {
+  const db = await openDB();
+  const tx = db.transaction("history", "readonly");
+  const store = tx.objectStore("history");
+  const index = store.index("view_at");
+
+  const request = index.openCursor(null, "prev");
+  const offset = (page - 1) * pageSize;
+  const items: HistoryItem[] = [];
+  let total = 0;
+
+  return new Promise((resolve, reject) => {
+    request.onsuccess = (event) => {
+      const cursor = (event.target as IDBRequest).result as IDBCursorWithValue;
+
+      if (cursor) {
+        const value = cursor.value as HistoryItem;
+        if (matchCondition(value, keyword, dateRange, businessType, searchType)) {
+          if (total >= offset && items.length < pageSize) {
+            items.push(value);
+          }
+          total++;
+        }
+        cursor.continue();
+      } else {
+        resolve({ items, total });
       }
     };
 
@@ -846,6 +894,24 @@ export const saveFavFolders = async (folders: FavoriteFolder[]): Promise<void> =
     tx.onerror = () => reject(tx.error);
   });
 };
+
+export const replaceFavFolders = async (folders: FavoriteFolder[]): Promise<void> => {
+  const db = await openDB();
+  const tx = db.transaction("favFolders", "readwrite");
+  const store = tx.objectStore("favFolders");
+
+  return new Promise((resolve, reject) => {
+    const clearRequest = store.clear();
+    clearRequest.onsuccess = () => {
+      folders.forEach((folder) => store.put(folder));
+    };
+    clearRequest.onerror = () => reject(clearRequest.error);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+    tx.onabort = () => reject(tx.error);
+  });
+};
+
 
 export const getFavFolders = async (mid?: number): Promise<FavoriteFolder[]> => {
   const db = await openDB();

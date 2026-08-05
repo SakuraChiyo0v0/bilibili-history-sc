@@ -43,8 +43,9 @@
       ]
     },
     "condition": {
+      "domainType": "thirdParty",
       "urlFilter": "bilivideo.com",
-      "resourceTypes": ["xmlhttprequest", "media", "websocket", "script", "other"],
+      "resourceTypes": ["xmlhttprequest", "media", "websocket", "script"],
       "requestMethods": ["get"]
     }
   },
@@ -188,6 +189,7 @@
       ]
     },
     "condition": {
+      "initiatorDomains": ["search.bilibili.com"],
       "urlFilter": "https://api.bilibili.com/x/web-interface/search",
       "resourceTypes": ["xmlhttprequest"],
       "requestMethods": ["get"]

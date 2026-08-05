@@ -1,14 +1,35 @@
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import { HistoryItem } from "../components/HistoryItem";
-import { getHistory, getTotalHistoryCount } from "../utils/db";
+import { HistorySyncModal } from "../components/HistorySyncModal";
+import { HistoryViewSettingsModal } from "../components/HistoryViewSettingsModal";
+import type { HistoryViewSettings } from "../components/HistoryViewSettingsModal";
+import { getHistory, getHistoryPage, getTotalHistoryCount } from "../utils/db";
 import { HistoryItem as HistoryItemType } from "../utils/types";
 import { useDebounce } from "use-debounce";
-import { RefreshCwIcon, ChevronDownIcon, Search, X, Filter, Minus, Plus } from "lucide-react";
-import { DATE_SELECTION_MODE, GRID_COLUMNS } from "../utils/constants";
+import {
+  RefreshCwIcon,
+  ChevronDownIcon,
+  Search,
+  X,
+  Filter,
+  CloudDownload,
+  Settings2,
+  Minus,
+  Plus,
+} from "lucide-react";
+import { Pagination } from "../components/Pagination";
+import {
+  DATE_SELECTION_MODE,
+  GRID_COLUMNS,
+  HISTORY_LOAD_MODE,
+  HISTORY_PAGE_SIZE,
+} from "../utils/constants";
 import { DateRangePicker } from "../components/DateRangePicker";
 import { getStorageValue, setStorageValue } from "../utils/storage";
 import { useVideoClickMode } from "../hooks/useVideoClickMode";
 import { useGlobalPlayer } from "../components/GlobalPlayerProvider";
+
+const DEFAULT_PAGE_SIZE = 100;
 
 export const History: React.FC = () => {
   const [history, setHistory] = useState<HistoryItemType[]>([]);
@@ -31,6 +52,14 @@ export const History: React.FC = () => {
   const videoClickMode = useVideoClickMode("history");
   const { playTracks } = useGlobalPlayer();
 
+  // null means the stored value is not loaded yet
+  const [loadMode, setLoadMode] = useState<"pagination" | "scroll" | null>(null);
+  const [currentPage, setCurrentPage] = useState(1);
+  const [totalFiltered, setTotalFiltered] = useState(0);
+  const [pageSize, setPageSize] = useState(DEFAULT_PAGE_SIZE);
+  const [isSyncModalOpen, setIsSyncModalOpen] = useState(false);
+  const [isViewSettingsModalOpen, setIsViewSettingsModalOpen] = useState(false);
+
   const loadMoreRef = useRef<HTMLDivElement>(null);
   const observerRef = useRef<IntersectionObserver | null>(null);
   const isLoadingRef = useRef<boolean>(false);
@@ -47,6 +76,12 @@ export const History: React.FC = () => {
     });
     getStorageValue<number>(GRID_COLUMNS, 4).then((cols) => {
       setGridColumns(cols);
+    });
+    getStorageValue<number>(HISTORY_PAGE_SIZE, DEFAULT_PAGE_SIZE).then((size) => {
+      setPageSize(size);
+    });
+    getStorageValue(HISTORY_LOAD_MODE, "pagination").then((mode) => {
+      setLoadMode(mode as "pagination" | "scroll");
     });
   }, []);
 
@@ -69,7 +104,7 @@ export const History: React.FC = () => {
 
   const loadHistory = async (isAppend: boolean = false) => {
     if (isAppend && isLoadingRef.current) {
-      return;
+      return false;
     }
 
     try {
@@ -99,8 +134,10 @@ export const History: React.FC = () => {
 
       setHasMore(hasMore);
       hasMoreRef.current = hasMore;
+      return true;
     } catch (error) {
       console.error("Failed to load history:", error);
+      return false;
     } finally {
       setIsLoading(false);
       isLoadingRef.current = false;
@@ -111,9 +148,55 @@ export const History: React.FC = () => {
   const loadHistoryRef = useRef(loadHistory);
   loadHistoryRef.current = loadHistory;
 
+  // offset-based page load for pagination mode
+  const loadPage = async (page: number) => {
+    if (isLoadingRef.current) {
+      return false;
+    }
+    try {
+      setIsLoading(true);
+      isLoadingRef.current = true;
+
+      const { items, total } = await getHistoryPage(
+        page,
+        pageSize,
+        debouncedKeyword,
+        { start: startDate, end: endDate },
+        selectedType,
+        searchType,
+      );
+
+      setHistory(items);
+      window.scrollTo({ top: 0, behavior: "smooth" });
+      setTotalFiltered(total);
+      setCurrentPage(page);
+      return true;
+    } catch (error) {
+      console.error("Failed to load history:", error);
+      return false;
+    } finally {
+      setIsLoading(false);
+      isLoadingRef.current = false;
+    }
+  };
+
+  const reload = () => {
+    if (loadMode === "pagination") {
+      return loadPage(1);
+    }
+    if (loadMode === "scroll") {
+      return loadHistory(false);
+    }
+    return Promise.resolve(false);
+  };
+
   useEffect(() => {
-    loadHistory(false);
-  }, [debouncedKeyword, startDate, endDate, selectedType, searchType]);
+    // wait until the stored load mode is resolved to avoid a duplicated first load
+    if (loadMode === null) {
+      return;
+    }
+    void reload();
+  }, [debouncedKeyword, startDate, endDate, selectedType, searchType, loadMode, pageSize]);
 
   useEffect(() => {
     getTotalCount();
@@ -122,6 +205,24 @@ export const History: React.FC = () => {
   const getTotalCount = async () => {
     const count = await getTotalHistoryCount();
     setTotalHistoryCount(count);
+    return count;
+  };
+
+  const handleSyncSuccess = async () => {
+    const [count, refreshed] = await Promise.all([getTotalCount(), reload()]);
+    if (!refreshed) {
+      throw new Error("历史记录列表刷新失败");
+    }
+    return count;
+  };
+
+  const handleViewSettingsSave = async (settings: HistoryViewSettings) => {
+    await Promise.all([
+      setStorageValue(HISTORY_LOAD_MODE, settings.loadMode),
+      setStorageValue(GRID_COLUMNS, settings.gridColumns),
+    ]);
+    setLoadMode(settings.loadMode);
+    setGridColumns(settings.gridColumns);
   };
 
   // Observer 只创建一次，通过 ref 访问最新状态
@@ -184,6 +285,31 @@ export const History: React.FC = () => {
         <div className="flex flex-col md:flex-row items-center justify-between px-6 py-4 gap-4 max-w-[1600px] mx-auto">
           {/* 左侧：统计与筛选 */}
           <div className="flex items-center gap-4 w-full md:w-auto">
+            <button
+              type="button"
+              onClick={() => setIsSyncModalOpen(true)}
+              className="inline-flex items-center gap-2 whitespace-nowrap rounded-lg border border-blue-200 bg-blue-50 px-3 py-1.5 text-sm font-medium text-blue-600 shadow-sm transition-colors hover:border-blue-300 hover:bg-blue-100 dark:border-blue-500/30 dark:bg-blue-500/10 dark:text-blue-400 dark:hover:border-blue-500/50 dark:hover:bg-blue-500/20"
+              title="同步历史记录"
+              aria-label="同步历史记录"
+            >
+              <CloudDownload className="h-4 w-4" />
+              <span>同步历史记录</span>
+            </button>
+
+            <button
+              onClick={() => {
+                void Promise.all([getTotalCount(), reload()]);
+              }}
+              className={`p-2  rounded-full bg-blue-50 text-blue-600 dark:hover:text-blue-400 transition-all shadow-sm border border-blue-200 dark:border-blue-500/30 dark:bg-blue-500/10 dark:text-blue-400 dark:hover:border-blue-500/50 dark:hover:bg-blue-500/20 hover:rotate-180 duration-500 ${
+                isLoading ? "opacity-50 cursor-not-allowed" : ""
+              }`}
+              disabled={isLoading}
+              title="刷新"
+            >
+              <RefreshCwIcon className={`w-4 h-4 ${isLoading ? "animate-spin" : ""}`} />
+            </button>
+
+
             <span className="text-sm font-medium text-gray-500 dark:text-neutral-400 bg-gray-50 dark:bg-neutral-900 px-3 py-1.5 rounded-full whitespace-nowrap border border-gray-100 dark:border-neutral-800">
               {totalHistoryCount} 条记录
             </span>
@@ -228,7 +354,7 @@ export const History: React.FC = () => {
           </div>
 
           {/* 中间：搜索框 (带类型选择) */}
-          <div className="flex-1 w-full md:max-w-xl px-4">
+          <div className="flex-1 w-full md:max-w-lg px-4 flex items-center">
             <div className="relative group w-full flex items-center bg-gray-50 dark:bg-neutral-900 border border-gray-200 dark:border-neutral-800 rounded-full transition-all duration-300 shadow-sm hover:shadow-md focus-within:bg-white dark:focus-within:bg-neutral-900 focus-within:ring-2 focus-within:ring-blue-100 dark:focus-within:ring-blue-500/20 focus-within:border-blue-400 dark:focus-within:border-blue-500">
               {/* 搜索类型下拉 */}
               <div className="relative">
@@ -311,7 +437,7 @@ export const History: React.FC = () => {
             </div>
           </div>
 
-          {/* 右侧：日期、列数与刷新 */}
+          {/* 右侧：日期、刷新与视图设置 */}
           <div className="flex items-center gap-3 w-full md:w-auto justify-end">
             <DateRangePicker
               startDate={startDate}
@@ -347,17 +473,13 @@ export const History: React.FC = () => {
             </div>
 
             <button
-              onClick={() => {
-                getTotalCount();
-                loadHistory(false);
-              }}
-              className={`p-2 bg-white dark:bg-neutral-900 text-gray-500 dark:text-neutral-400 rounded-full hover:bg-blue-50 dark:hover:bg-blue-500/10 hover:text-blue-600 dark:hover:text-blue-400 transition-all shadow-sm border border-gray-200 dark:border-neutral-800 hover:border-blue-200 dark:hover:border-blue-500/30 hover:rotate-180 duration-500 ${
-                isLoading ? "opacity-50 cursor-not-allowed" : ""
-              }`}
-              disabled={isLoading}
-              title="刷新"
+              type="button"
+              onClick={() => setIsViewSettingsModalOpen(true)}
+              className="rounded-full border border-gray-200 bg-white p-2 text-gray-500 shadow-sm transition-colors hover:border-blue-200 hover:bg-blue-50 hover:text-blue-600 dark:border-neutral-800 dark:bg-neutral-900 dark:text-neutral-400 dark:hover:border-blue-500/30 dark:hover:bg-blue-500/10 dark:hover:text-blue-400"
+              title="历史视图设置"
+              aria-label="历史视图设置"
             >
-              <RefreshCwIcon className={`w-4 h-4 ${isLoading ? "animate-spin" : ""}`} />
+              <Settings2 className="h-4 w-4" />
             </button>
           </div>
         </div>
@@ -386,13 +508,29 @@ export const History: React.FC = () => {
             }}
           />
         ))}
-        <div
-          ref={loadMoreCallbackRef}
-          className="col-span-full py-8 text-center text-gray-500 dark:text-neutral-400 text-sm"
-        >
-          {getLoadMoreText()}
-        </div>
+        {loadMode === "scroll" && (
+          <div
+            ref={loadMoreCallbackRef}
+            className="col-span-full py-8 text-center text-gray-500 dark:text-neutral-400 text-sm"
+          >
+            {getLoadMoreText()}
+          </div>
+        )}
       </div>
+
+      {loadMode === "pagination" && (
+        <Pagination
+          currentPage={currentPage}
+          totalItems={totalFiltered}
+          pageSize={pageSize}
+          onPageChange={loadPage}
+          onPageSizeChange={(size) => {
+            setPageSize(size);
+            setStorageValue(HISTORY_PAGE_SIZE, size);
+          }}
+        />
+      )}
+
 
       {history.length === 0 && !isLoading && (
         <div className="text-center py-20">
@@ -420,6 +558,19 @@ export const History: React.FC = () => {
           )}
         </div>
       )}
+      <HistorySyncModal
+        open={isSyncModalOpen}
+        onClose={() => setIsSyncModalOpen(false)}
+        onSyncSuccess={handleSyncSuccess}
+      />
+
+      <HistoryViewSettingsModal
+        open={isViewSettingsModalOpen}
+        loadMode={loadMode ?? "pagination"}
+        gridColumns={gridColumns}
+        onClose={() => setIsViewSettingsModalOpen(false)}
+        onSave={handleViewSettingsSave}
+      />
     </div>
   );
 };

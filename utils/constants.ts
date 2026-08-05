@@ -7,6 +7,8 @@ export const IS_SYNCING_FAV = "isSyncingFav";
 export const HAS_FULL_SYNC = "hasFullSync";
 export const HAS_FULL_FAV_SYNC = "hasFullFavSync";
 
+export const HISTORY_LAST_SYNC = "lastSync";
+
 export const SYNC_INTERVAL = "syncInterval";
 
 export const SYNC_TIME_REMAIN = "syncTimeRemain";
@@ -28,11 +30,49 @@ export const LAST_SEEN_UPDATE_VERSION = "lastSeenUpdateVersion";
 // 仅全新安装时设为 false；旧版本升级时缺少该键，按已完成处理
 export const INITIAL_SETUP_COMPLETED = "initialSetupCompleted";
 
+// history page load mode: "pagination" | "scroll", default "pagination"
+export const HISTORY_LOAD_MODE = "history_load_mode";
+// page size for the history page pagination mode, default 100
+export const HISTORY_PAGE_SIZE = "history_page_size";
+export const STORAGE_LAST_WARNING = "storageLastWarning";
+export const BACKUP_REMINDER_LAST_DISMISSED_AT = "backupReminderLastDismissedAt";
+export const BACKUP_LAST_EXPORT_AT = "backupLastExportAt";
+
+// 历史记录本地目录自动备份
+export const LOCAL_HISTORY_BACKUP_ALARM = "localHistoryBackup";
+export const LOCAL_HISTORY_BACKUP_ENABLED = "localHistoryBackupEnabled";
+export const LOCAL_HISTORY_BACKUP_INTERVAL_HOURS = "localHistoryBackupIntervalHours";
+export const LOCAL_HISTORY_BACKUP_RETENTION_COUNT = "localHistoryBackupRetentionCount";
+export const LOCAL_HISTORY_BACKUP_DIRECTORY_NAME = "localHistoryBackupDirectoryName";
+export const LOCAL_HISTORY_BACKUP_LAST_ATTEMPT_AT = "localHistoryBackupLastAttemptAt";
+export const LOCAL_HISTORY_BACKUP_LAST_SUCCESS_AT = "localHistoryBackupLastSuccessAt";
+export const LOCAL_HISTORY_BACKUP_LAST_FILE_NAME = "localHistoryBackupLastFileName";
+export const LOCAL_HISTORY_BACKUP_LAST_RECORD_COUNT = "localHistoryBackupLastRecordCount";
+export const LOCAL_HISTORY_BACKUP_LAST_ERROR = "localHistoryBackupLastError";
+export const LOCAL_HISTORY_BACKUP_LAST_CLEANUP_WARNING = "localHistoryBackupLastCleanupWarning";
+export const LOCAL_HISTORY_BACKUP_NEEDS_PERMISSION = "localHistoryBackupNeedsPermission";
+export const DEFAULT_LOCAL_HISTORY_BACKUP_INTERVAL_HOURS = 24;
+export const DEFAULT_LOCAL_HISTORY_BACKUP_RETENTION_COUNT = 30;
+
 // WebDAV 同步相关
 export const WEBDAV_CONFIG = "webdavConfig";
 export const WEBDAV_LAST_SYNC = "webdavLastSync";
 export const WEBDAV_AUTO_SYNC_ENABLED = "webdavAutoSyncEnabled";
 export const WEBDAV_AUTO_SYNC_INTERVAL = "webdavAutoSyncInterval"; // 单位：分钟，默认 30
+export const WEBDAV_SYNC_ITEMS = "webdavSyncItems"; // 勾选的同步数据项，页面与后台自动同步共用
+
+/** 各数据项是否参与 WebDAV 同步，默认只同步历史记录 */
+export const DEFAULT_WEBDAV_SYNC_ITEMS = {
+  history: true,
+  likedMusic: false,
+  favFolders: false,
+  favResources: false,
+  subscribedCollections: false,
+  subscribedCollectionResources: false,
+};
+
+export type WebDavSyncItems = typeof DEFAULT_WEBDAV_SYNC_ITEMS;
+export type WebDavSyncKey = keyof WebDavSyncItems;
 
 export const DASHSCOPE_API_KEY = "dashscopeApiKey";
 export const AI_SEARCH_HISTORY = "aiSearchHistory";
@@ -58,9 +98,34 @@ export const UPDATE_HISTORY = [
     ],
   },
   {
-    date: "2026-07-20",
+    date: "2026-08-04",
+    version: "2.1.3",
+    changes: ["修复同步历史记录一直卡在同步进行中的bug"],
+  },
+  {
+    date: "2026-08-03",
+    version: "2.1.2",
+    changes: [
+      "设置页面新增历史记录本地自动备份：支持选择备份目录、设置备份周期和保留份数，并可随时立即备份",
+    ],
+  },
+  {
+    date: "2026-08-03",
+    version: "2.1.1",
+    changes: ["优化数据备份提醒：改为每 7 天显示一次，并支持在弹窗中直接导出历史记录 JSON"],
+  },
+  {
+    date: "2026-08-02",
     version: "2.1.0",
     changes: [
+      "精简同步状态界面，优化历史记录同步响应处理",
+      "历史记录页面新增手动增量/全量同步，并将加载方式和每行列数整合至视图设置",
+      "收藏夹支持按文件夹手动增量/全量同步",
+      "增强 IndexedDB 存储保护，新增存储状态、容量与写入异常提示",
+      "收藏夹支持一键增量/全量同步全部文件夹，并展示各文件夹同步结果",
+      "默认关闭“B站删除记录时同步删除本地记录”，降低本地历史记录误删风险",
+      "后台同步去掉自动同步收藏夹的逻辑",
+      "定期弹出数据备份提示，提醒用户备份历史记录，防止丢失",
       "新增首次启动数据来源选择：可从 B 站全量拉取，或先配置 WebDAV 并从云端恢复。",
       "全新安装在用户完成选择前暂停后台自动同步，避免重新安装后立即产生大量 B 站请求。",
       "WebDAV 首次恢复会验证并保存配置，将云端数据作为本机同步基线，后续从增量同步开始。",
@@ -91,6 +156,9 @@ export const UPDATE_HISTORY = [
       "播放器升级为 Shaka Player DASH 播放，提供统一的播放、进度、音量、静音与全屏控制；音乐模式仅播放音频并展示视频封面。",
       "优化播放流畅性：缓存短期播放信息并预取下一条内容；网络或流地址失效时会重试、重新解析并尝试从当前进度恢复。",
       "修复音乐搜索请求的 Referer 规则和关键词编码问题，提升搜索稳定性。",
+      "历史记录页面支持分页加载和下拉加载，支持切换",
+      "新增订阅合集管理",
+      "优化webdav数据管理",
     ],
   },
   {

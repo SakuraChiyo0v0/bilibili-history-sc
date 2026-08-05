@@ -1897,7 +1897,6 @@ packages:
 
   shaka-player@5.2.1:
     resolution: {integrity: sha512-Sj8Kg94Ws8hUxzjHnC570o1jQcZwB7OxIwi25vLI3mOVmL8xpso3HyIqM7hjbgAhsOgdFojpJYwtcvR/t0a9vA==}
-    engines: {node: '>=18'}
 
   shell-quote@1.7.3:
     resolution: {integrity: sha512-Vpfqwm4EnqGdlsBFNmHhxhElJYrdfcxPThu+ryKS5J8L/fhAwLazFZtq+S+TWZ9ANj2piSQLGj6NQg+lKPmxrw==}

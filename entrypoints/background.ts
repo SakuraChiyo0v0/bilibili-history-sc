@@ -1,10 +1,10 @@
 import {
-  IS_SYNCING,
   HAS_FULL_SYNC,
   HAS_FULL_FAV_SYNC,
   SYNC_INTERVAL,
   SYNC_TIME_REMAIN,
   IS_SYNC_DELETE_FROM_BILIBILI,
+  IS_SYNCING,
   IS_SYNCING_FAV,
   FAV_AUTO_SYNC_ENABLED,
   FAV_SYNC_INTERVAL,
@@ -13,11 +13,17 @@ import {
   SYNC_PROGRESS_FAV,
   SYNC_PROGRESS_COLLECTIONS,
   HIDDEN_MENUS,
+  HISTORY_LAST_SYNC,
   WEBDAV_CONFIG,
   WEBDAV_LAST_SYNC,
   WEBDAV_AUTO_SYNC_ENABLED,
   WEBDAV_AUTO_SYNC_INTERVAL,
   INITIAL_SETUP_COMPLETED,
+  WEBDAV_SYNC_ITEMS,
+  DEFAULT_WEBDAV_SYNC_ITEMS,
+  WebDavSyncItems,
+  WebDavSyncKey,
+  LOCAL_HISTORY_BACKUP_ALARM,
 } from "../utils/constants";
 import {
   openDB,
@@ -29,7 +35,7 @@ import {
   deleteFavResources,
   deleteFavFolder,
   deleteFavResource,
-  moveFavResource,
+  moveFavResource,  replaceFavFolders,
   getAllHistory,
   getAllLikedMusic,
   getAllFavFolders,
@@ -48,10 +54,52 @@ import {
 } from "../utils/db";
 import { getStorageValue, setStorageValue } from "../utils/storage";
 import { WebDavConfig, ensureDirectory, uploadFile, downloadFile } from "../utils/webdav";
-import { SubscribedCollection, SubscribedCollectionResource } from "../utils/types";
+import { recordStorageWarning } from "../utils/storageHealth";
+import {
+  FavoriteFolder,
+  RefreshFavoriteFoldersResponse,
+  SubscribedCollection,
+  SubscribedCollectionResource,
+  SyncFavoriteFolderRequest,
+  SyncFavoriteFolderResponse,
+  SyncHistoryRequest,
+  SyncHistoryResponse,
+  LocalHistoryBackupRequest,
+  LocalHistoryBackupResult,
+} from "../utils/types";
+import { isLocalHistoryBackupDue, runLocalHistoryBackup } from "../utils/localHistoryBackup";
 
 export default defineBackground(() => {
-  console.log("Hello background!", { id: browser.runtime.id });
+  let localHistoryBackupPromise: Promise<LocalHistoryBackupResult> | null = null;
+
+  const ensureLocalHistoryBackupAlarm = async (): Promise<void> => {
+    const alarm = await browser.alarms.get(LOCAL_HISTORY_BACKUP_ALARM);
+    if (!alarm || alarm.periodInMinutes !== 1) {
+      await browser.alarms.create(LOCAL_HISTORY_BACKUP_ALARM, {
+        periodInMinutes: 1,
+      });
+    }
+  };
+
+  const runLocalHistoryBackupOnce = (allowEmpty = false): Promise<LocalHistoryBackupResult> => {
+    if (localHistoryBackupPromise) return localHistoryBackupPromise;
+
+    localHistoryBackupPromise = runLocalHistoryBackup(allowEmpty).finally(() => {
+      localHistoryBackupPromise = null;
+    });
+    return localHistoryBackupPromise;
+  };
+
+  void ensureLocalHistoryBackupAlarm().catch((error) => {
+    console.error("初始化历史记录本地备份定时任务失败:", error);
+  });
+
+  const actionApi = browser.action ?? browser.browserAction;
+  actionApi.onClicked.addListener(() => {
+    void browser.tabs.create({
+      url: browser.runtime.getURL("/my-history.html"),
+    });
+  });
 
   const fetchBilibiliApi = async (url: string, init: RequestInit = {}) => {
     const headers = new Headers(init.headers);
@@ -99,7 +147,7 @@ export default defineBackground(() => {
     }
   });
 
-  const intervalSync = async (syncInterval: number) => {
+  const intervalSync = async (syncInterval: number = 1) => {
     try {
       // 检查是否正在同步
       const isSyncing = await getStorageValue(IS_SYNCING);
@@ -161,15 +209,14 @@ export default defineBackground(() => {
     if (alarm.name === "syncHistory") {
       // 获取同步间隔
       const syncInterval = await getStorageValue(SYNC_INTERVAL, 1);
-      // 获取当前同步剩余时间
-      const syncRemain = await getStorageValue(SYNC_TIME_REMAIN, syncInterval);
-      // 当前同步剩余时间减1
-      const currentSyncRemain = syncRemain - 1;
-      // 如果当前同步剩余时间大于0，则不进行同步
-      if (currentSyncRemain > 0) {
-        console.log(`还需${currentSyncRemain}分钟进行同步，暂时跳过`);
-        // 更新同步剩余时间
-        await setStorageValue(SYNC_TIME_REMAIN, currentSyncRemain);
+      // 根据最近一次成功同步的时间判断是否需要同步
+      const lastSyncTime = await getStorageValue<number>(HISTORY_LAST_SYNC, 0);
+      const elapsed = Date.now() - lastSyncTime;
+      const intervalMs = syncInterval * 60 * 1000;
+
+      if (elapsed <= intervalMs) {
+        const remainingMinutes = Math.ceil((intervalMs - elapsed) / 60000);
+        console.log(`还需${remainingMinutes}分钟进行历史记录同步，暂时跳过`);
         return;
       }
       // 使用提取的函数处理定时任务
@@ -514,12 +561,77 @@ export default defineBackground(() => {
     }
   };
 
+  const handleSyncFavoriteFolder = async (
+    message: SyncFavoriteFolderRequest,
+    sendResponse: (response: SyncFavoriteFolderResponse) => void,
+  ) => {
+    const folderId = Number(message.folderId);
+    if (!Number.isSafeInteger(folderId) || folderId <= 0) {
+      sendResponse({ success: false, error: "收藏夹信息不完整" });
+      return;
+    }
+    if (typeof message.isFullSync !== "boolean") {
+      sendResponse({ success: false, error: "同步方式不完整" });
+      return;
+    }
+
+    let response: SyncFavoriteFolderResponse;
+    try {
+      const folder = await syncFavoriteFolderById(folderId, message.isFullSync);
+      const mode = message.isFullSync ? "full" : "incremental";
+      response = {
+        success: true,
+        message: `「${folder.title}」${message.isFullSync ? "全量" : "增量"}同步成功`,
+        folderId,
+        mode,
+      };
+    } catch (error) {
+      console.error("同步单个收藏夹失败:", error);
+      response = {
+        success: false,
+        error: error instanceof Error ? error.message : "未知错误",
+      };
+    }
+
+    sendResponse(response);
+  };
+
+  const handleRefreshFavoriteFolders = async (
+    sendResponse: (response: RefreshFavoriteFoldersResponse) => void,
+  ) => {
+    try {
+      const { folders } = await getFavoriteFoldersFromBilibili();
+      await replaceFavFolders(folders);
+      sendResponse({ success: true, folderCount: folders.length });
+    } catch (error) {
+      console.error("刷新收藏夹目录失败:", error);
+      sendResponse({
+        success: false,
+        error: error instanceof Error ? error.message : "未知错误",
+      });
+    }
+  };
+
+  const handleRunLocalHistoryBackup = async (
+    message: LocalHistoryBackupRequest,
+    sendResponse: (response: LocalHistoryBackupResult) => void,
+  ) => {
+    try {
+      sendResponse(await runLocalHistoryBackupOnce(Boolean(message.allowEmpty)));
+    } catch (error) {
+      sendResponse({
+        success: false,
+        errorCode: "WRITE_FAILED",
+        error: error instanceof Error ? error.message : "本地备份失败",
+      });
+    }
+  };
   browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (message.action === "syncHistory") {
       handleSyncHistory(message, sendResponse);
       return true; // 保持消息通道开放
     } else if (message.action === "getCookies") {
-      browser.cookies.getAll({ domain: "bilibili.com" }, (cookies) => {
+      browser.cookies.getAll({ domain: "bilibili.com" }).then((cookies) => {
         sendResponse({ success: true, cookies });
       });
       return true;
@@ -544,6 +656,12 @@ export default defineBackground(() => {
     } else if (message.action === "syncFavorites") {
       handleSyncFavorites(message, sendResponse);
       return true;
+    } else if (message.action === "syncFavoriteFolder") {
+      handleSyncFavoriteFolder(message as SyncFavoriteFolderRequest, sendResponse);
+      return true;
+    } else if (message.action === "refreshFavoriteFolders") {
+      handleRefreshFavoriteFolders(sendResponse);
+      return true;
     } else if (message.action === "syncSubscribedCollections") {
       handleSyncSubscribedCollections(sendResponse);
       return true;
@@ -552,6 +670,8 @@ export default defineBackground(() => {
       return true;
     } else if (message.action === "syncAllSubscribedCollectionResources") {
       handleSyncAllSubscribedCollectionResources(sendResponse);
+    } else if (message.action === "runLocalHistoryBackup") {
+      handleRunLocalHistoryBackup(message as LocalHistoryBackupRequest, sendResponse);
       return true;
     }
   });
@@ -574,7 +694,7 @@ export default defineBackground(() => {
       let view_at = 0;
       const type = "all";
       const ps = 30;
-      let totalSynced = 0;
+      let totalSynced = 0;      console.log(`${isFullSync ? "全量" : "增量"}同步开始`);
 
       // 循环获取所有历史记录
       while (hasMore) {
@@ -592,37 +712,37 @@ export default defineBackground(() => {
           throw new Error("获取历史记录失败");
         }
 
-        const data = await response.json();
+        const { data, code, message } = await response.json();
 
-        if (data.code !== 0) {
-          throw new Error(data.message || "获取历史记录失败");
+        if (code !== 0) {
+          throw new Error(message || "获取历史记录失败");
         }
 
+        const { cursor, list } = data;
         // 更新分页参数
-        hasMore = data.data.list.length > 0;
-        max = data.data.cursor.max;
-        view_at = data.data.cursor.view_at;
+        hasMore = list.length > 0;
+        max = cursor.max;
+        view_at = cursor.view_at;
 
-        if (data.data.list.length > 0) {
+        if (list.length > 0) {
           // 为每批数据创建新的事务
           const db = await openDB();
           const tx = db.transaction("history", "readwrite");
           const store = tx.objectStore("history");
           // 取出list中的第一条和最后一条
           if (!isFullSync) {
-            const firstItem = data.data.list[0];
-            const lastItem = data.data.list[data.data.list.length - 1];
+            const firstItem = list[0];
+            const lastItem = list[list.length - 1];
             // 如果firstItem的bvid和lastItem的bvid在indexedDB中存在，则不进行同步
             const firstItemExists = await getItem(store, firstItem.history.oid);
             const lastItemExists = await getItem(store, lastItem.history.oid);
             if (firstItemExists && lastItemExists) {
-              console.log("增量同步至此结束");
               hasMore = false;
             }
           }
 
           // 批量存储历史记录
-          for (const item of data.data.list) {
+          for (const item of list) {
             // put是异步的
             store.put({
               id: item.history.oid,
@@ -655,17 +775,28 @@ export default defineBackground(() => {
           // 等待事务完成
           await new Promise((resolve, reject) => {
             tx.oncomplete = resolve;
-            tx.onerror = () => reject(tx.error);
+            tx.onerror = () => {
+              void recordStorageWarning(tx.error, "sync-history-transaction");
+              reject(tx.error);
+            };
+            tx.onabort = () => {
+              void recordStorageWarning(tx.error, "sync-history-transaction-abort");
+              reject(tx.error);
+            };
           });
 
           // 添加延时，避免请求过于频繁
           await new Promise((resolve) => setTimeout(resolve, 1000));
         }
       }
+      console.log(`${isFullSync ? "全量" : "增量"}同步结束`);
+
+      if (isFullSync) {
+        await setStorageValue(HAS_FULL_SYNC, true);
+      }
 
       // 更新最后同步时间
-      await browser.storage.local.set({ lastSync: Date.now() });
-      await setStorageValue(SYNC_PROGRESS_HISTORY, { current: totalSynced, message: "同步完成" });
+      await setStorageValue(HISTORY_LAST_SYNC, Date.now());
 
       return true;
     } catch (error) {
@@ -674,184 +805,6 @@ export default defineBackground(() => {
         current: 0,
         message: `同步失败: ${error instanceof Error ? error.message : "未知错误"}`,
       });
-      throw error;
-    }
-  }
-
-  async function syncFavorites(isFullSync = false): Promise<void> {
-    try {
-      const cookies = await browser.cookies.getAll({ domain: "bilibili.com" });
-      const SESSDATA = cookies.find((c) => c.name === "SESSDATA")?.value;
-      if (!SESSDATA) throw new Error("未登录 B 站");
-
-      // 1. 获取用户信息 (MID)
-      const navRes = await fetchBilibiliApi("https://api.bilibili.com/x/web-interface/nav", {
-        headers: { Cookie: `SESSDATA=${SESSDATA}` },
-      });
-      const navData = await navRes.json();
-      if (navData.code !== 0) throw new Error("获取用户信息失败");
-      const mid = navData.data.mid;
-
-      // 2. 获取收藏夹列表
-      const folderRes = await fetchBilibiliApi(
-        `https://api.bilibili.com/x/v3/fav/folder/created/list-all?up_mid=${mid}`,
-        { headers: { Cookie: `SESSDATA=${SESSDATA}` } },
-      );
-      const folderData = await folderRes.json();
-      if (folderData.code !== 0) throw new Error("获取收藏夹失败");
-
-      const folders = folderData.data.list;
-      const safeFolders = folders || [];
-      if (safeFolders.length > 0) {
-        // 添加 index 字段
-        const foldersWithIndex = safeFolders.map((f: any, idx: number) => ({
-          ...f,
-          index: idx,
-        }));
-        await saveFavFolders(foldersWithIndex);
-        console.log(`同步了 ${safeFolders.length} 个收藏夹`);
-      }
-
-      // 3. 同步每个收藏夹的资源
-      // 全量同步时计算总数用于进度展示；增量同步时总数按每个收藏夹1页(最多20)估算
-      const totalItems = isFullSync
-        ? safeFolders.reduce((sum: number, folder: any) => sum + (folder.media_count || 0), 0)
-        : safeFolders.length * 20;
-      let currentSynced = 0;
-
-      await setStorageValue(SYNC_PROGRESS_FAV, {
-        current: 0,
-        total: totalItems,
-        message: isFullSync ? "开始全量同步收藏夹..." : "开始增量同步收藏夹(仅第一页)...",
-      });
-
-      for (const folder of safeFolders) {
-        console.log(`正在同步收藏夹: ${folder.title} (${isFullSync ? "全量" : "仅第一页"})`);
-
-        // 用于记录本次API返回的所有资源ID，全量同步时用于后续比对删除本地已取消收藏的资源
-        const onlineResourceIds = new Set<number>();
-
-        let hasMore = true;
-        let page = 1;
-        let completedFullSync = true;
-        while (hasMore) {
-          let res: Response | undefined;
-          let fetchSuccess = false;
-          let retries = 0;
-
-          while (!fetchSuccess && retries < 2) {
-            let timeoutId: ReturnType<typeof setTimeout> | undefined;
-            try {
-              const controller = new AbortController();
-              timeoutId = setTimeout(() => controller.abort(), 30000); // 30秒超时重试
-
-              res = await fetchBilibiliApi(
-                `https://api.bilibili.com/x/v3/fav/resource/list?media_id=${folder.id}&pn=${page}&ps=20&keyword=&order=mtime&type=0&tid=0&platform=web`,
-                {
-                  headers: { Cookie: `SESSDATA=${SESSDATA}` },
-                  signal: controller.signal,
-                },
-              );
-              if (!res.ok) {
-                throw new Error(`HTTP ${res.status} ${res.statusText}`);
-              }
-              fetchSuccess = true;
-            } catch (err) {
-              console.warn(
-                `请求收藏夹 ${folder.title} 第 ${page} 页失败（${err instanceof Error ? err.message : "未知错误"}），正在重试 (${retries + 1}/2)...`,
-              );
-              retries++;
-              if (retries < 2) await new Promise((r) => setTimeout(r, retries * 2000));
-            } finally {
-              if (timeoutId) clearTimeout(timeoutId);
-            }
-          }
-
-          if (!res || !fetchSuccess) {
-            console.error(
-              `获取收藏夹 ${folder.title} 第 ${page} 页彻底失败（HTTP ${res?.status || "网络错误"}），跳过本页`,
-            );
-            completedFullSync = false;
-            break;
-          }
-
-          const data = await res.json();
-          if (data.code !== 0) {
-            console.error(`获取收藏夹 ${folder.title} 资源失败:`, data.message);
-            completedFullSync = false;
-            break;
-          }
-
-          const medias = data.data.medias;
-          if (medias && medias.length > 0) {
-            // 收集这一页的资源ID
-            medias.forEach((m: any) => onlineResourceIds.add(m.id));
-
-            // 补全 folder_id 和 index
-            const resources = medias.map((m: any, idx: number) => ({
-              ...m,
-              folder_id: folder.id,
-              // 使用全局索引 (page-1)*20 + idx
-              index: (page - 1) * 20 + idx,
-              // fix some fields mapping if needed, based on interface
-              // data from API matches interface mostly
-              id: m.id,
-              bv_id: m.bv_id || m.bvid,
-            }));
-
-            await saveFavResources(resources);
-
-            // 更新进度
-            currentSynced += resources.length;
-            await setStorageValue(SYNC_PROGRESS_FAV, {
-              current: currentSynced,
-              total: totalItems,
-              message: `正在同步: ${folder.title}`,
-            });
-
-            // 非全量同步：只拉第一页，不继续翻页
-            if (!isFullSync) {
-              hasMore = false;
-            } else {
-              hasMore = data.data.has_more;
-              page++;
-            }
-            await new Promise((resolve) => setTimeout(resolve, 500)); // limit rate
-          } else {
-            hasMore = false;
-          }
-        }
-
-        // 4. 清理本地存在但线上已不存在的资源 (取消收藏的)
-        // 仅全量同步时执行清理，增量同步只拉了第一页，无法准确判断哪些被取消收藏
-        if (isFullSync && completedFullSync) {
-          try {
-            const localResources = await getFavResources(folder.id);
-            const idsToDelete = localResources
-              .filter((item) => !onlineResourceIds.has(item.id))
-              .map((item) => item.id);
-
-            if (idsToDelete.length > 0) {
-              await deleteFavResources(idsToDelete);
-              console.log(
-                `从收藏夹 "${folder.title}" 删除了 ${idsToDelete.length} 个已取消收藏的项目`,
-              );
-            }
-          } catch (err) {
-            console.error(`清理收藏夹 "${folder.title}" 本地数据失败:`, err);
-          }
-        } else if (isFullSync) {
-          console.warn(`收藏夹 "${folder.title}" 未完成全量同步，跳过本地删除以防数据丢失`);
-        }
-      }
-
-      await setStorageValue(SYNC_PROGRESS_FAV, {
-        current: totalItems,
-        total: totalItems,
-        message: "收藏夹同步完成",
-      });
-    } catch (error) {
-      console.error("同步收藏夹过程出错:", error);
       throw error;
     }
   }
@@ -888,95 +841,6 @@ export default defineBackground(() => {
     return navData.data.mid;
   }
 
-  async function syncSubscribedCollections(): Promise<void> {
-    const sessdata = await getBilibiliSession();
-    const currentMid = await getCurrentBilibiliMid(sessdata);
-    const pageSize = 50;
-    let page = 1;
-    let hasMore = true;
-    const collections: SubscribedCollection[] = [];
-
-    while (hasMore) {
-      const response = await fetchBilibiliApi(
-        `https://api.bilibili.com/x/v3/fav/folder/collected/list?pn=${page}&ps=${pageSize}&up_mid=${currentMid}&platform=web&web_location=333.1387`,
-        { headers: { Cookie: `SESSDATA=${sessdata}` } },
-      );
-      if (!response.ok) throw new Error("获取订阅合集失败");
-
-      const data = await response.json();
-      if (data.code !== 0) throw new Error(data.message || "获取订阅合集失败");
-
-      // 该接口在 platform=web 时会同时返回普通收藏夹(type=11)和视频合集(type=21)。
-      // 只有 type=21 的 id 才能作为 season_id 传给合集详情接口。
-      const list = (data.data?.list || []).filter(
-        (item: any) =>
-          Number(item.type) === 21 &&
-          !(item.title === "该合集已失效" && Number(item.upper?.mid) === 0),
-      );
-      collections.push(
-        ...list.map((item: any, index: number) => ({
-          id: item.id,
-          mid: item.mid,
-          title: item.title || "未命名合集",
-          cover: item.cover || "",
-          intro: item.intro || "",
-          ctime: item.ctime || 0,
-          mtime: item.mtime || 0,
-          media_count: item.media_count || 0,
-          upper: item.upper || { mid: item.mid, name: "未知 UP 主", face: "" },
-          index: collections.length + index,
-        })),
-      );
-
-      hasMore = Boolean(data.data?.has_more);
-      page += 1;
-    }
-
-    await replaceSubscribedCollections(collections);
-  }
-
-  async function syncSubscribedCollectionResources(collectionId: number): Promise<boolean> {
-    const sessdata = await getBilibiliSession();
-    const pageSize = 30;
-    let page = 1;
-    let hasMore = true;
-    const resources: SubscribedCollectionResource[] = [];
-
-    while (hasMore) {
-      const response = await fetchBilibiliApi(
-        `https://api.bilibili.com/x/space/fav/season/list?season_id=${collectionId}&pn=${page}&ps=${pageSize}`,
-        { headers: { Cookie: `SESSDATA=${sessdata}` } },
-      );
-      if (!response.ok) throw new Error(`获取合集内容失败（HTTP ${response.status}）`);
-
-      const data = await response.json();
-      if (data.code !== 0) throw new Error(data.message || "获取合集内容失败");
-
-      const medias = data.data?.medias || [];
-
-      resources.push(
-        ...medias.map((media: any, index: number) => ({
-          id: `${collectionId}-${media.aid || media.id || media.bvid}`,
-          collection_id: collectionId,
-          aid: media.aid || media.id || 0,
-          bvid: media.bvid || media.bv_id || "",
-          title: media.title || "未命名视频",
-          cover: media.cover || media.pic || "",
-          duration: media.duration || 0,
-          author_name: media.upper?.name || media.owner?.name || "未知 UP 主",
-          author_mid: media.upper?.mid || media.owner?.mid || 0,
-          pubdate: media.pubtime || media.ctime || 0,
-          index: resources.length + index,
-        })),
-      );
-
-      hasMore = Boolean(data.data?.has_more);
-      page += 1;
-    }
-
-    await replaceSubscribedCollectionResources(collectionId, resources);
-    return true;
-  }
 
   async function syncAllSubscribedCollectionResources(): Promise<void> {
     await syncSubscribedCollections();
@@ -997,8 +861,8 @@ export default defineBackground(() => {
           total: totalItems,
           message: `正在同步: ${collection.title}`,
         });
-        const synced = await syncSubscribedCollectionResources(collection.id);
-        if (synced) currentSynced += collection.media_count;
+        await syncSubscribedCollectionResources(collection.id);
+        currentSynced += collection.media_count;
         await setStorageValue(SYNC_PROGRESS_COLLECTIONS, {
           current: currentSynced,
           total: totalItems,
@@ -1021,7 +885,356 @@ export default defineBackground(() => {
     }
   }
 
-  // WebDAV 自动双向同步：拉取 → 合并 → 推送
+  interface FavoriteFolderPage {
+    medias: any[];
+    hasMore: boolean;
+  }
+
+  async function getFavoriteFoldersFromBilibili(): Promise<{
+    sessdata: string;
+    folders: FavoriteFolder[];
+  }> {
+    const sessdata = await getBilibiliSession();
+
+    const navRes = await fetch("https://api.bilibili.com/x/web-interface/nav", {
+      headers: { Cookie: `SESSDATA=${sessdata}` },
+    });
+    if (!navRes.ok) throw new Error("获取用户信息失败");
+
+    const navData = await navRes.json();
+    if (navData.code !== 0) throw new Error(navData.message || "获取用户信息失败");
+
+    const mid = Number(navData.data?.mid);
+    if (!Number.isSafeInteger(mid) || mid <= 0) throw new Error("获取用户信息失败");
+
+    const folderRes = await fetch(
+      `https://api.bilibili.com/x/v3/fav/folder/created/list-all?up_mid=${mid}`,
+      { headers: { Cookie: `SESSDATA=${sessdata}` } },
+    );
+    if (!folderRes.ok) throw new Error("获取收藏夹失败");
+
+    const folderData = await folderRes.json();
+    if (folderData.code !== 0) throw new Error(folderData.message || "获取收藏夹失败");
+
+    if (!folderData.data || !("list" in folderData.data)) {
+      throw new Error("收藏夹数据格式异常");
+    }
+
+    const onlineFolders = folderData.data.list;
+    if (onlineFolders !== null && !Array.isArray(onlineFolders)) {
+      throw new Error("收藏夹数据格式异常");
+    }
+
+    const folders = (onlineFolders || []).map(
+      (folder: FavoriteFolder, index: number): FavoriteFolder => ({
+        ...folder,
+        id: Number(folder.id),
+        index,
+      }),
+    );
+
+    return { sessdata, folders };
+  }
+
+  async function fetchFavoriteFolderPage(
+    folder: FavoriteFolder,
+    page: number,
+    sessdata: string,
+  ): Promise<FavoriteFolderPage> {
+    let lastError: unknown;
+
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 30000);
+
+      try {
+        const response = await fetch(
+          `https://api.bilibili.com/x/v3/fav/resource/list?media_id=${folder.id}&pn=${page}&ps=20`,
+          {
+            headers: { Cookie: `SESSDATA=${sessdata}` },
+            signal: controller.signal,
+          },
+        );
+
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}`);
+        }
+
+        const data = await response.json();
+        if (data.code !== 0) {
+          throw new Error(data.message || "B 站接口返回失败");
+        }
+        if (!data.data || (data.data.medias != null && !Array.isArray(data.data.medias))) {
+          throw new Error("收藏夹资源数据格式异常");
+        }
+
+        return {
+          medias: data.data.medias || [],
+          hasMore: Boolean(data.data.has_more),
+        };
+      } catch (error) {
+        lastError = error;
+        if (attempt < 2) {
+          console.warn(`请求收藏夹 ${folder.title} 第 ${page} 页失败，正在重试 (${attempt}/2)`);
+          await new Promise((resolve) => setTimeout(resolve, 2000));
+        }
+      } finally {
+        clearTimeout(timeoutId);
+      }
+    }
+
+    const reason = lastError instanceof Error ? `：${lastError.message}` : "";
+    throw new Error(`获取收藏夹「${folder.title}」第 ${page} 页失败${reason}`);
+  }
+
+  async function syncFavoriteFolderResources(
+    folder: FavoriteFolder,
+    sessdata: string,
+    isFullSync: boolean,
+  ): Promise<void> {
+    console.log(`正在同步收藏夹: ${folder.title} (${isFullSync ? "全量" : "增量"})`);
+
+    const localResources = await getFavResources(folder.id);
+    const existingResourceIds = new Set(localResources.map((item) => item.id));
+    const onlineResourceIds = new Set<number>();
+
+    let page = 1;
+    let allPagesFetched = false;
+
+    while (true) {
+      const { medias, hasMore } = await fetchFavoriteFolderPage(folder, page, sessdata);
+
+      if (medias.length === 0) {
+        if (hasMore) throw new Error(`收藏夹「${folder.title}」分页数据异常`);
+        allPagesFetched = true;
+        break;
+      }
+
+      const resourceIds = medias.map((media: any) => Number(media.id));
+      if (resourceIds.some((id: number) => !Number.isSafeInteger(id) || id <= 0)) {
+        throw new Error(`收藏夹「${folder.title}」资源数据格式异常`);
+      }
+
+      resourceIds.forEach((id: number) => onlineResourceIds.add(id));
+
+      const reachedLocalBoundary =
+        !isFullSync &&
+        existingResourceIds.has(resourceIds[0]) &&
+        existingResourceIds.has(resourceIds[resourceIds.length - 1]);
+
+      const resources = medias.map((media: any, index: number) => ({
+        ...media,
+        folder_id: folder.id,
+        index: (page - 1) * 20 + index,
+        id: resourceIds[index],
+        bv_id: media.bv_id || media.bvid,
+      }));
+      await saveFavResources(resources);
+
+      if (!hasMore) {
+        allPagesFetched = true;
+        break;
+      }
+      if (reachedLocalBoundary) break;
+
+      page += 1;
+      await new Promise((resolve) => setTimeout(resolve, 500));
+    }
+
+    if (isFullSync) {
+      if (!allPagesFetched) {
+        throw new Error(`收藏夹「${folder.title}」未完整同步，已跳过本地清理`);
+      }
+
+      const idsToDelete = localResources
+        .filter((item) => !onlineResourceIds.has(item.id))
+        .map((item) => item.id);
+
+      if (idsToDelete.length > 0) {
+        await deleteFavResources(idsToDelete);
+        console.log(`从收藏夹 "${folder.title}" 删除了 ${idsToDelete.length} 个已取消收藏的项目`);
+      }
+    }
+  }
+
+  async function syncFavoriteFolderById(
+    folderId: number,
+    isFullSync: boolean,
+  ): Promise<FavoriteFolder> {
+    const { sessdata, folders } = await getFavoriteFoldersFromBilibili();
+    const folder = folders.find((item) => item.id === folderId);
+    if (!folder) throw new Error("收藏夹不存在或无权访问");
+
+    await saveFavFolders([folder]);
+    await syncFavoriteFolderResources(folder, sessdata, isFullSync);
+    return folder;
+  }
+
+  async function syncFavorites(isFullSync = false): Promise<void> {
+    try {
+      const { sessdata, folders } = await getFavoriteFoldersFromBilibili();
+
+      if (folders.length > 0) {
+        await saveFavFolders(folders);
+        console.log(`同步了 ${folders.length} 个收藏夹`);
+      }
+
+      for (const folder of folders) {
+        await syncFavoriteFolderResources(folder, sessdata, isFullSync);
+      }
+    } catch (error) {
+      console.error("同步收藏夹过程出错:", error);
+      throw error;
+    }
+  }
+
+
+  async function syncSubscribedCollections(): Promise<void> {
+    const sessdata = await getBilibiliSession();
+    const currentMid = await getCurrentBilibiliMid(sessdata);
+    const pageSize = 50;
+    let page = 1;
+    let total = Infinity;
+    const collections: SubscribedCollection[] = [];
+
+    while (collections.length < total) {
+      const response = await fetch(
+        `https://api.bilibili.com/x/v3/fav/folder/collected/list?pn=${page}&ps=${pageSize}&up_mid=${currentMid}&platform=web&web_location=333.1387`,
+        { headers: { Cookie: `SESSDATA=${sessdata}` } },
+      );
+      if (!response.ok) throw new Error("获取订阅合集失败");
+
+      const data = await response.json();
+      if (data.code !== 0) throw new Error(data.message || "获取订阅合集失败");
+
+      // 该接口在 platform=web 时会同时返回普通收藏夹(type=11)和视频合集(type=21)。
+      // 只有 type=21 的 id 才能作为 season_id 传给合集详情接口。
+      const list = (data.data?.list || []).filter(
+        (item: any) =>
+          Number(item.type) === 21 &&
+          !(item.title === "该合集已失效" && Number(item.upper?.mid) === 0),
+      );
+      total = Number(data.data?.count || 0);
+      collections.push(
+        ...list.map((item: any, index: number) => ({
+          id: item.id,
+          mid: item.mid,
+          title: item.title || "未命名合集",
+          cover: item.cover || "",
+          intro: item.intro || "",
+          ctime: item.ctime || 0,
+          mtime: item.mtime || 0,
+          media_count: item.media_count || 0,
+          upper: item.upper || { mid: item.mid, name: "未知 UP 主", face: "" },
+          index: collections.length + index,
+        })),
+      );
+
+      if (list.length < pageSize) break;
+      page += 1;
+    }
+
+    await replaceSubscribedCollections(collections);
+  }
+
+  async function syncSubscribedCollectionResources(collectionId: number): Promise<void> {
+    const sessdata = await getBilibiliSession();
+    const pageSize = 30;
+    let page = 1;
+    let hasMore = true;
+    const resources: SubscribedCollectionResource[] = [];
+
+    while (hasMore) {
+      const response = await fetch(
+        `https://api.bilibili.com/x/space/fav/season/list?season_id=${collectionId}&pn=${page}&ps=${pageSize}`,
+        {
+          headers: {
+            Cookie: `SESSDATA=${sessdata}`,
+          },
+        },
+      );
+      if (!response.ok) throw new Error("获取合集内容失败");
+
+      const data = await response.json();
+      if (data.code !== 0) throw new Error(data.message || "获取合集内容失败");
+
+      const medias = data.data?.medias || [];
+      resources.push(
+        ...medias.map((media: any, index: number) => ({
+          id: `${collectionId}-${media.id}`,
+          collection_id: collectionId,
+          aid: media.id,
+          bvid: media.bvid || media.bv_id || "",
+          title: media.title || "未命名视频",
+          cover: media.cover || "",
+          duration: media.duration || 0,
+          author_name: media.upper?.name || "未知 UP 主",
+          author_mid: media.upper?.mid || 0,
+          pubdate: media.pubtime || media.ctime || 0,
+          index: resources.length + index,
+        })),
+      );
+
+      hasMore = Boolean(data.data?.has_more);
+      page += 1;
+    }
+
+    await replaceSubscribedCollectionResources(collectionId, resources);
+  }
+
+  // WebDAV 同步数据项定义：文件名、本地读取与远端合并策略（与 WebDavSync 页面保持一致）
+  const WEBDAV_DATA_ITEMS: {
+    key: WebDavSyncKey;
+    label: string;
+    file: string;
+    getAll: () => Promise<unknown[]>;
+    merge: (items: any[]) => Promise<unknown>;
+  }[] = [
+    {
+      key: "history",
+      label: "历史",
+      file: "history.json",
+      getAll: getAllHistory,
+      merge: smartMergeHistory,
+    },
+    {
+      key: "likedMusic",
+      label: "音乐",
+      file: "likedMusic.json",
+      getAll: getAllLikedMusic,
+      merge: smartMergeLikedMusic,
+    },
+    {
+      key: "favFolders",
+      label: "收藏夹",
+      file: "favFolders.json",
+      getAll: getAllFavFolders,
+      merge: importFavFolders,
+    },
+    {
+      key: "favResources",
+      label: "收藏",
+      file: "favResources.json",
+      getAll: getAllFavResources,
+      merge: smartMergeFavResources,
+    },
+    {
+      key: "subscribedCollections",
+      label: "订阅合集",
+      file: "subscribedCollections.json",
+      getAll: getAllSubscribedCollections,
+      merge: importSubscribedCollections,
+    },
+    {
+      key: "subscribedCollectionResources",
+      label: "合集视频",
+      file: "subscribedCollectionResources.json",
+      getAll: getAllSubscribedCollectionResources,
+      merge: smartMergeSubscribedCollectionResources,
+    },
+  ];
+
+  // WebDAV 自动双向同步：拉取 → 合并 → 推送（仅同步用户勾选的数据项）
   async function autoSyncWebDav(): Promise<void> {
     try {
       const config = await getStorageValue<WebDavConfig | null>(WEBDAV_CONFIG, null);
@@ -1030,84 +1243,41 @@ export default defineBackground(() => {
         return;
       }
 
-      console.log("开始 WebDAV 双向同步...");
+      const syncItems = await getStorageValue<WebDavSyncItems>(
+        WEBDAV_SYNC_ITEMS,
+        DEFAULT_WEBDAV_SYNC_ITEMS,
+      );
+      const items = WEBDAV_DATA_ITEMS.filter((item) => syncItems[item.key]);
+      if (items.length === 0) {
+        console.log("WebDAV 同步数据项均未勾选，跳过自动同步");
+        return;
+      }
+
+      console.log(`开始 WebDAV 双向同步（${items.map((i) => i.label).join("、")}）...`);
       await ensureDirectory(config);
 
-      // 自动同步仅合并并传输本地缓存，避免周期性全量请求 B 站接口。
-      // 手动备份和手动双向同步仍会先刷新收藏夹与合集，保证主动备份的完整性。
       // ===== 第一步：拉取远端数据并合并到本地 =====
       console.log("[WebDAV 同步] 步骤 1/2：拉取并合并远端数据...");
-
-      const historyData = await downloadFile(config, "history.json");
-      if (historyData) {
-        const items = JSON.parse(historyData);
-        await smartMergeHistory(items);
-      }
-
-      const musicData = await downloadFile(config, "likedMusic.json");
-      if (musicData) {
-        const items = JSON.parse(musicData);
-        await smartMergeLikedMusic(items);
-      }
-
-      const foldersData = await downloadFile(config, "favFolders.json");
-      if (foldersData) {
-        const items = JSON.parse(foldersData);
-        await importFavFolders(items);
-      }
-
-      const resourcesData = await downloadFile(config, "favResources.json");
-      if (resourcesData) {
-        const items = JSON.parse(resourcesData);
-        await smartMergeFavResources(items);
-      }
-
-      const collectionsData = await downloadFile(config, "subscribedCollections.json");
-      if (collectionsData) {
-        const items = JSON.parse(collectionsData);
-        await importSubscribedCollections(items);
-      }
-
-      const collectionResourcesData = await downloadFile(
-        config,
-        "subscribedCollectionResources.json",
-      );
-      if (collectionResourcesData) {
-        const items = JSON.parse(collectionResourcesData);
-        await smartMergeSubscribedCollectionResources(items);
+      for (const item of items) {
+        const remote = await downloadFile(config, item.file);
+        if (remote) {
+          await item.merge(JSON.parse(remote));
+        }
       }
 
       // ===== 第二步：将合并后的最新本地数据推送到远端 =====
       console.log("[WebDAV 同步] 步骤 2/2：推送本地数据到远端...");
-
-      const history = await getAllHistory();
-      await uploadFile(config, "history.json", JSON.stringify(history));
-
-      const music = await getAllLikedMusic();
-      await uploadFile(config, "likedMusic.json", JSON.stringify(music));
-
-      const folders = await getAllFavFolders();
-      await uploadFile(config, "favFolders.json", JSON.stringify(folders));
-
-      const resources = await getAllFavResources();
-      await uploadFile(config, "favResources.json", JSON.stringify(resources));
-
-      const collections = await getAllSubscribedCollections();
-      await uploadFile(config, "subscribedCollections.json", JSON.stringify(collections));
-
-      const collectionResources = await getAllSubscribedCollectionResources();
-      await uploadFile(
-        config,
-        "subscribedCollectionResources.json",
-        JSON.stringify(collectionResources),
-      );
+      const summary: string[] = [];
+      for (const item of items) {
+        const data = await item.getAll();
+        await uploadFile(config, item.file, JSON.stringify(data));
+        summary.push(`${item.label} ${data.length}`);
+      }
 
       // 同步完成，记录时间戳
       await setStorageValue(WEBDAV_LAST_SYNC, Date.now());
 
-      console.log(
-        `WebDAV 双向同步完成：历史 ${history.length}，音乐 ${music.length}，收藏夹 ${folders.length}，收藏 ${resources.length}，订阅合集 ${collections.length}，合集视频 ${collectionResources.length}`,
-      );
+      console.log(`WebDAV 双向同步完成：${summary.join("，")}`);
     } catch (error) {
       console.error("WebDAV 双向同步失败:", error);
     }
