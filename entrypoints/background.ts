@@ -330,7 +330,6 @@ export default defineBackground(() => {
     sendResponse: (response: any) => void,
   ) => {
     const collectionId = Number(message.collectionId);
-
     if (!Number.isFinite(collectionId)) {
       sendResponse({ success: false, error: "合集信息不完整" });
       return;
@@ -391,7 +390,7 @@ export default defineBackground(() => {
       ...Object.fromEntries(Object.entries(values).map(([key, value]) => [key, String(value)])),
       csrf,
     });
-    const response = await fetch(`https://api.bilibili.com${path}`, {
+    const response = await fetchBilibiliApi(`https://api.bilibili.com${path}`, {
       method: "POST",
       headers: {
         "Content-Type": "application/x-www-form-urlencoded",
@@ -413,7 +412,10 @@ export default defineBackground(() => {
       await postBilibiliForm("/x/v3/fav/folder/edit", { media_id: folderId, title });
       sendResponse({ success: true });
     } catch (error) {
-      sendResponse({ success: false, error: error instanceof Error ? error.message : "修改收藏夹失败" });
+      sendResponse({
+        success: false,
+        error: error instanceof Error ? error.message : "修改收藏夹失败",
+      });
     }
   };
 
@@ -425,7 +427,10 @@ export default defineBackground(() => {
       await deleteFavFolder(folderId);
       sendResponse({ success: true });
     } catch (error) {
-      sendResponse({ success: false, error: error instanceof Error ? error.message : "删除收藏夹失败" });
+      sendResponse({
+        success: false,
+        error: error instanceof Error ? error.message : "删除收藏夹失败",
+      });
     }
   };
 
@@ -434,7 +439,11 @@ export default defineBackground(() => {
       const folderId = Number(message.folderId);
       const resourceId = Number(message.resourceId);
       const resourceType = Number(message.resourceType);
-      if (!Number.isFinite(folderId) || !Number.isFinite(resourceId) || !Number.isFinite(resourceType)) {
+      if (
+        !Number.isFinite(folderId) ||
+        !Number.isFinite(resourceId) ||
+        !Number.isFinite(resourceType)
+      ) {
         throw new Error("收藏内容信息不完整");
       }
       await postBilibiliForm("/x/v3/fav/resource/batch-del", {
@@ -445,14 +454,14 @@ export default defineBackground(() => {
       await deleteFavResource(folderId, resourceId);
       sendResponse({ success: true });
     } catch (error) {
-      sendResponse({ success: false, error: error instanceof Error ? error.message : "移出收藏夹失败" });
+      sendResponse({
+        success: false,
+        error: error instanceof Error ? error.message : "移出收藏夹失败",
+      });
     }
   };
 
-  const handleMoveFavResource = async (
-    message: any,
-    sendResponse: (response: any) => void,
-  ) => {
+  const handleMoveFavResource = async (message: any, sendResponse: (response: any) => void) => {
     try {
       const sourceFolderId = Number(message.sourceFolderId);
       const targetFolderId = Number(message.targetFolderId);
@@ -498,7 +507,10 @@ export default defineBackground(() => {
       await deleteSubscribedCollection(collectionId);
       sendResponse({ success: true });
     } catch (error) {
-      sendResponse({ success: false, error: error instanceof Error ? error.message : "取消订阅失败" });
+      sendResponse({
+        success: false,
+        error: error instanceof Error ? error.message : "取消订阅失败",
+      });
     }
   };
 
@@ -567,7 +579,7 @@ export default defineBackground(() => {
       // 循环获取所有历史记录
       while (hasMore) {
         // 获取历史记录
-        const response = await fetch(
+        const response = await fetchBilibiliApi(
           `https://api.bilibili.com/x/web-interface/history/cursor?max=${max}&view_at=${view_at}&type=${type}&ps=${ps}`,
           {
             headers: {
@@ -673,7 +685,7 @@ export default defineBackground(() => {
       if (!SESSDATA) throw new Error("未登录 B 站");
 
       // 1. 获取用户信息 (MID)
-      const navRes = await fetch("https://api.bilibili.com/x/web-interface/nav", {
+      const navRes = await fetchBilibiliApi("https://api.bilibili.com/x/web-interface/nav", {
         headers: { Cookie: `SESSDATA=${SESSDATA}` },
       });
       const navData = await navRes.json();
@@ -681,7 +693,7 @@ export default defineBackground(() => {
       const mid = navData.data.mid;
 
       // 2. 获取收藏夹列表
-      const folderRes = await fetch(
+      const folderRes = await fetchBilibiliApi(
         `https://api.bilibili.com/x/v3/fav/folder/created/list-all?up_mid=${mid}`,
         { headers: { Cookie: `SESSDATA=${SESSDATA}` } },
       );
@@ -723,35 +735,42 @@ export default defineBackground(() => {
         let page = 1;
         let completedFullSync = true;
         while (hasMore) {
-          let res;
+          let res: Response | undefined;
           let fetchSuccess = false;
           let retries = 0;
 
           while (!fetchSuccess && retries < 2) {
+            let timeoutId: ReturnType<typeof setTimeout> | undefined;
             try {
               const controller = new AbortController();
-              const timeoutId = setTimeout(() => controller.abort(), 30000); // 30秒超时重试
+              timeoutId = setTimeout(() => controller.abort(), 30000); // 30秒超时重试
 
-              res = await fetch(
-                `https://api.bilibili.com/x/v3/fav/resource/list?media_id=${folder.id}&pn=${page}&ps=20`,
+              res = await fetchBilibiliApi(
+                `https://api.bilibili.com/x/v3/fav/resource/list?media_id=${folder.id}&pn=${page}&ps=20&keyword=&order=mtime&type=0&tid=0&platform=web`,
                 {
                   headers: { Cookie: `SESSDATA=${SESSDATA}` },
                   signal: controller.signal,
                 },
               );
-              clearTimeout(timeoutId);
+              if (!res.ok) {
+                throw new Error(`HTTP ${res.status} ${res.statusText}`);
+              }
               fetchSuccess = true;
             } catch (err) {
               console.warn(
-                `请求收藏夹 ${folder.title} 第 ${page} 页超时或失败，正在重试 (${retries + 1}/2)...`,
+                `请求收藏夹 ${folder.title} 第 ${page} 页失败（${err instanceof Error ? err.message : "未知错误"}），正在重试 (${retries + 1}/2)...`,
               );
               retries++;
-              await new Promise((r) => setTimeout(r, 2000));
+              if (retries < 2) await new Promise((r) => setTimeout(r, retries * 2000));
+            } finally {
+              if (timeoutId) clearTimeout(timeoutId);
             }
           }
 
-          if (!res || !res.ok) {
-            console.error(`获取收藏夹 ${folder.title} 彻底失败，跳过本页`);
+          if (!res || !fetchSuccess) {
+            console.error(
+              `获取收藏夹 ${folder.title} 第 ${page} 页彻底失败（HTTP ${res?.status || "网络错误"}），跳过本页`,
+            );
             completedFullSync = false;
             break;
           }
@@ -858,7 +877,7 @@ export default defineBackground(() => {
   }
 
   async function getCurrentBilibiliMid(sessdata: string): Promise<number> {
-    const navRes = await fetch("https://api.bilibili.com/x/web-interface/nav", {
+    const navRes = await fetchBilibiliApi("https://api.bilibili.com/x/web-interface/nav", {
       headers: { Cookie: `SESSDATA=${sessdata}` },
     });
     if (!navRes.ok) throw new Error("获取用户信息失败");
@@ -874,11 +893,11 @@ export default defineBackground(() => {
     const currentMid = await getCurrentBilibiliMid(sessdata);
     const pageSize = 50;
     let page = 1;
-    let total = Infinity;
+    let hasMore = true;
     const collections: SubscribedCollection[] = [];
 
-    while (collections.length < total) {
-      const response = await fetch(
+    while (hasMore) {
+      const response = await fetchBilibiliApi(
         `https://api.bilibili.com/x/v3/fav/folder/collected/list?pn=${page}&ps=${pageSize}&up_mid=${currentMid}&platform=web&web_location=333.1387`,
         { headers: { Cookie: `SESSDATA=${sessdata}` } },
       );
@@ -887,10 +906,13 @@ export default defineBackground(() => {
       const data = await response.json();
       if (data.code !== 0) throw new Error(data.message || "获取订阅合集失败");
 
+      // 该接口在 platform=web 时会同时返回普通收藏夹(type=11)和视频合集(type=21)。
+      // 只有 type=21 的 id 才能作为 season_id 传给合集详情接口。
       const list = (data.data?.list || []).filter(
-        (item: any) => item.title !== "该合集已失效" || Number(item.upper?.mid) !== 0,
+        (item: any) =>
+          Number(item.type) === 21 &&
+          !(item.title === "该合集已失效" && Number(item.upper?.mid) === 0),
       );
-      total = Number(data.data?.count || 0);
       collections.push(
         ...list.map((item: any, index: number) => ({
           id: item.id,
@@ -906,7 +928,7 @@ export default defineBackground(() => {
         })),
       );
 
-      if (list.length < pageSize) break;
+      hasMore = Boolean(data.data?.has_more);
       page += 1;
     }
 
@@ -921,63 +943,28 @@ export default defineBackground(() => {
     const resources: SubscribedCollectionResource[] = [];
 
     while (hasMore) {
-      const endpoints = [
-        {
-          name: "收藏夹",
-          url: `https://api.bilibili.com/x/v3/fav/resource/list?media_id=${collectionId}&pn=${page}&ps=${pageSize}&platform=web`,
-        },
-        {
-          name: "合集",
-          url: `https://api.bilibili.com/x/space/fav/season/list?season_id=${collectionId}&pn=${page}&ps=${pageSize}`,
-        },
-      ];
-      const errors: string[] = [];
-      let isNotFound = true;
-      let data: any = null;
+      const response = await fetchBilibiliApi(
+        `https://api.bilibili.com/x/space/fav/season/list?season_id=${collectionId}&pn=${page}&ps=${pageSize}`,
+        { headers: { Cookie: `SESSDATA=${sessdata}` } },
+      );
+      if (!response.ok) throw new Error(`获取合集内容失败（HTTP ${response.status}）`);
 
-      for (const endpoint of endpoints) {
-        try {
-          const response = await fetch(endpoint.url, {
-            headers: { Cookie: `SESSDATA=${sessdata}` },
-          });
-          if (!response.ok) {
-            errors.push(`${endpoint.name}接口 HTTP ${response.status}`);
-            isNotFound &&= response.status === 404;
-            continue;
-          }
-
-          const result = await response.json();
-          if (result.code === 0) {
-            data = result;
-            break;
-          }
-
-          errors.push(`${endpoint.name}接口 ${result.code}: ${result.message || "未知错误"}`);
-          isNotFound &&= result.code === -404 || result.code === 11010;
-        } catch (error) {
-          errors.push(`${endpoint.name}接口请求失败: ${error instanceof Error ? error.message : "未知错误"}`);
-          isNotFound = false;
-        }
-      }
-
-      if (!data && isNotFound) {
-        console.warn(`订阅合集 ${collectionId} 已失效或不可访问，跳过同步`);
-        return false;
-      }
-      if (!data) throw new Error(`获取合集内容失败（${errors.join("；")}）`);
+      const data = await response.json();
+      if (data.code !== 0) throw new Error(data.message || "获取合集内容失败");
 
       const medias = data.data?.medias || [];
+
       resources.push(
         ...medias.map((media: any, index: number) => ({
-          id: `${collectionId}-${media.id}`,
+          id: `${collectionId}-${media.aid || media.id || media.bvid}`,
           collection_id: collectionId,
-          aid: media.id,
+          aid: media.aid || media.id || 0,
           bvid: media.bvid || media.bv_id || "",
           title: media.title || "未命名视频",
-          cover: media.cover || "",
+          cover: media.cover || media.pic || "",
           duration: media.duration || 0,
-          author_name: media.upper?.name || "未知 UP 主",
-          author_mid: media.upper?.mid || 0,
+          author_name: media.upper?.name || media.owner?.name || "未知 UP 主",
+          author_mid: media.upper?.mid || media.owner?.mid || 0,
           pubdate: media.pubtime || media.ctime || 0,
           index: resources.length + index,
         })),
