@@ -1046,18 +1046,8 @@ export default defineBackground(() => {
       console.log("开始 WebDAV 双向同步...");
       await ensureDirectory(config);
 
-      try {
-        await syncAllFavoritesForBackup();
-      } catch (error) {
-        console.warn("刷新收藏夹缓存失败，将继续同步已有本地数据:", error);
-      }
-
-      try {
-        await syncAllSubscribedCollectionResources();
-      } catch (error) {
-        console.warn("刷新合集缓存失败，将继续同步已有本地数据:", error);
-      }
-
+      // 自动同步仅合并并传输本地缓存，避免周期性全量请求 B 站接口。
+      // 手动备份和手动双向同步仍会先刷新收藏夹与合集，保证主动备份的完整性。
       // ===== 第一步：拉取远端数据并合并到本地 =====
       console.log("[WebDAV 同步] 步骤 1/2：拉取并合并远端数据...");
 

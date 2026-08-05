@@ -1,11 +1,17 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { toast } from "react-hot-toast";
+import { ArrowLeft } from "lucide-react";
+import { useNavigate, useSearchParams } from "react-router-dom";
+import { ActionDialog } from "@/components/ActionDialog";
 import { getStorageValue, setStorageValue } from "@/utils/storage";
 import {
   WEBDAV_CONFIG,
   WEBDAV_LAST_SYNC,
   WEBDAV_AUTO_SYNC_ENABLED,
   WEBDAV_AUTO_SYNC_INTERVAL,
+  HAS_FULL_SYNC,
+  HAS_FULL_FAV_SYNC,
+  INITIAL_SETUP_COMPLETED,
 } from "@/utils/constants";
 import {
   WebDavConfig,
@@ -39,6 +45,12 @@ import {
   SubscribedCollection,
   SubscribedCollectionResource,
 } from "@/utils/types";
+import {
+  applySyncedPreferences,
+  getSyncedPreferences,
+  parseSyncedPreferences,
+  type SyncedPreferences,
+} from "@/utils/syncedPreferences";
 
 /** WebDAV 同步的数据文件名 */
 const DATA_FILES = {
@@ -48,6 +60,7 @@ const DATA_FILES = {
   favResources: "favResources.json",
   subscribedCollections: "subscribedCollections.json",
   subscribedCollectionResources: "subscribedCollectionResources.json",
+  preferences: "preferences.json",
 } as const;
 
 /** 备份/恢复进度信息 */
@@ -65,6 +78,10 @@ const defaultConfig: WebDavConfig = {
 };
 
 const WebDavSync = () => {
+  const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  const isOnboarding = searchParams.get("onboarding") === "1";
+
   // ===== WebDAV 配置状态 =====
   const [config, setConfig] = useState<WebDavConfig>(defaultConfig);
   const [isTesting, setIsTesting] = useState(false);
@@ -78,6 +95,8 @@ const WebDavSync = () => {
 
   // ===== 备份模式对话框 =====
   const [showBackupDialog, setShowBackupDialog] = useState(false);
+  const [pendingPreferences, setPendingPreferences] = useState<SyncedPreferences | null>(null);
+  const preferencesDecisionRef = useRef<((shouldApply: boolean) => void) | null>(null);
 
   // ===== 手动导出/导入状态 =====
   const [isExporting, setIsExporting] = useState(false);
@@ -156,6 +175,42 @@ const WebDavSync = () => {
     if (!response?.success) throw new Error(response?.error || "同步全部收藏夹视频失败");
   };
 
+  const requestPreferencesDecision = (preferences: SyncedPreferences) =>
+    new Promise<boolean>((resolve) => {
+      preferencesDecisionRef.current = resolve;
+      setPendingPreferences(preferences);
+    });
+
+  const resolvePreferencesDecision = (shouldApply: boolean) => {
+    const resolve = preferencesDecisionRef.current;
+    preferencesDecisionRef.current = null;
+    setPendingPreferences(null);
+    resolve?.(shouldApply);
+  };
+
+  const readRemotePreferences = async (): Promise<{
+    hasFile: boolean;
+    preferences: SyncedPreferences | null;
+  }> => {
+    const data = await downloadFile(config, DATA_FILES.preferences);
+    if (!data) return { hasFile: false, preferences: null };
+
+    try {
+      const preferences = parseSyncedPreferences(JSON.parse(data));
+      if (!preferences) throw new Error("格式不正确");
+      return { hasFile: true, preferences };
+    } catch {
+      toast.error("远端偏好配置格式无效，已保留远端文件");
+      return { hasFile: true, preferences: null };
+    }
+  };
+
+  const uploadPreferences = async () => {
+    const preferences = await getSyncedPreferences();
+    const ok = await uploadFile(config, DATA_FILES.preferences, JSON.stringify(preferences));
+    if (!ok) throw new Error("上传偏好设置失败");
+  };
+
   // ===== WebDAV 备份 =====
 
   const handleBackup = async () => {
@@ -165,38 +220,38 @@ const WebDavSync = () => {
     }
 
     setIsBackingUp(true);
-    setSyncProgress({ current: 0, total: 6, message: "准备备份数据..." });
+    setSyncProgress({ current: 0, total: 7, message: "准备备份数据..." });
 
     try {
-      setSyncProgress({ current: 0, total: 6, message: "正在同步全部收藏夹视频..." });
+      setSyncProgress({ current: 0, total: 7, message: "正在同步全部收藏夹视频..." });
       await syncAllFavoriteResources();
 
-      setSyncProgress({ current: 0, total: 6, message: "正在同步全部合集视频..." });
+      setSyncProgress({ current: 0, total: 7, message: "正在同步全部合集视频..." });
       await syncAllSubscribedCollectionResources();
 
       // 确保远程目录存在
       await ensureDirectory(config);
 
       // 1. 上传历史记录
-      setSyncProgress({ current: 0, total: 6, message: "正在备份历史记录..." });
+      setSyncProgress({ current: 0, total: 7, message: "正在备份历史记录..." });
       const history = await getAllHistory();
       const historyOk = await uploadFile(config, DATA_FILES.history, JSON.stringify(history));
       if (!historyOk) throw new Error("上传历史记录失败");
 
       // 2. 上传喜欢的音乐
-      setSyncProgress({ current: 1, total: 6, message: "正在备份喜欢的音乐..." });
+      setSyncProgress({ current: 1, total: 7, message: "正在备份喜欢的音乐..." });
       const music = await getAllLikedMusic();
       const musicOk = await uploadFile(config, DATA_FILES.likedMusic, JSON.stringify(music));
       if (!musicOk) throw new Error("上传喜欢的音乐失败");
 
       // 3. 上传收藏夹
-      setSyncProgress({ current: 2, total: 6, message: "正在备份收藏夹..." });
+      setSyncProgress({ current: 2, total: 7, message: "正在备份收藏夹..." });
       const folders = await getAllFavFolders();
       const foldersOk = await uploadFile(config, DATA_FILES.favFolders, JSON.stringify(folders));
       if (!foldersOk) throw new Error("上传收藏夹失败");
 
       // 4. 上传收藏资源
-      setSyncProgress({ current: 3, total: 6, message: "正在备份收藏资源..." });
+      setSyncProgress({ current: 3, total: 7, message: "正在备份收藏资源..." });
       const resources = await getAllFavResources();
       const resourcesOk = await uploadFile(
         config,
@@ -206,7 +261,7 @@ const WebDavSync = () => {
       if (!resourcesOk) throw new Error("上传收藏资源失败");
 
       // 5. 上传订阅合集
-      setSyncProgress({ current: 4, total: 6, message: "正在备份订阅合集..." });
+      setSyncProgress({ current: 4, total: 7, message: "正在备份订阅合集..." });
       const collections = await getAllSubscribedCollections();
       const collectionsOk = await uploadFile(
         config,
@@ -216,7 +271,7 @@ const WebDavSync = () => {
       if (!collectionsOk) throw new Error("上传订阅合集失败");
 
       // 6. 上传订阅合集视频
-      setSyncProgress({ current: 5, total: 6, message: "正在备份合集视频..." });
+      setSyncProgress({ current: 5, total: 7, message: "正在备份合集视频..." });
       const collectionResources = await getAllSubscribedCollectionResources();
       const collectionResourcesOk = await uploadFile(
         config,
@@ -225,12 +280,15 @@ const WebDavSync = () => {
       );
       if (!collectionResourcesOk) throw new Error("上传合集视频失败");
 
+      setSyncProgress({ current: 6, total: 7, message: "正在备份偏好设置..." });
+      await uploadPreferences();
+
       // 记录同步时间（数值时间戳）
       const now = Date.now();
       await setStorageValue(WEBDAV_LAST_SYNC, now);
       setLastSync(now);
 
-      setSyncProgress({ current: 6, total: 6, message: "备份完成！" });
+      setSyncProgress({ current: 7, total: 7, message: "备份完成！" });
       toast.success(
         `备份完成！历史 ${history.length} 条，音乐 ${music.length} 首，收藏夹 ${folders.length} 个，收藏 ${resources.length} 项，订阅合集 ${collections.length} 个，合集视频 ${collectionResources.length} 项`,
       );
@@ -252,22 +310,39 @@ const WebDavSync = () => {
     }
 
     setIsBackingUp(true);
-    setSyncProgress({ current: 0, total: 12, message: "准备双向同步..." });
+    setSyncProgress({ current: 0, total: 13, message: "准备双向同步..." });
 
     try {
-      setSyncProgress({ current: 0, total: 12, message: "正在同步全部收藏夹视频..." });
+      setSyncProgress({ current: 0, total: 13, message: "正在同步全部收藏夹视频..." });
       await syncAllFavoriteResources();
 
-      setSyncProgress({ current: 0, total: 12, message: "正在同步全部合集视频..." });
+      setSyncProgress({ current: 0, total: 13, message: "正在同步全部合集视频..." });
       await syncAllSubscribedCollectionResources();
 
       await ensureDirectory(config);
+
+      let shouldUploadPreferences = true;
+      const remotePreferences = await readRemotePreferences();
+      if (remotePreferences.hasFile) {
+        if (!remotePreferences.preferences) {
+          shouldUploadPreferences = false;
+        } else {
+          setSyncProgress({ current: 0, total: 13, message: "检测到远端偏好配置，等待确认..." });
+          const shouldApply = await requestPreferencesDecision(remotePreferences.preferences);
+          if (shouldApply) {
+            await applySyncedPreferences(remotePreferences.preferences);
+            toast.success("已应用远端偏好设置");
+          } else {
+            shouldUploadPreferences = false;
+          }
+        }
+      }
 
       // 第一步：拉取远端数据并合并
       let totalMerged = 0;
       let totalSkipped = 0;
 
-      setSyncProgress({ current: 0, total: 12, message: "步骤 1/2：拉取历史记录..." });
+      setSyncProgress({ current: 0, total: 13, message: "步骤 1/2：拉取历史记录..." });
       const historyData = await downloadFile(config, DATA_FILES.history);
       if (historyData) {
         const items = JSON.parse(historyData) as HistoryItem[];
@@ -276,7 +351,7 @@ const WebDavSync = () => {
         totalSkipped += result.skipped;
       }
 
-      setSyncProgress({ current: 1, total: 12, message: "步骤 1/2：拉取喜欢的音乐..." });
+      setSyncProgress({ current: 1, total: 13, message: "步骤 1/2：拉取喜欢的音乐..." });
       const musicData = await downloadFile(config, DATA_FILES.likedMusic);
       if (musicData) {
         const items = JSON.parse(musicData) as LikedMusic[];
@@ -285,7 +360,7 @@ const WebDavSync = () => {
         totalSkipped += result.skipped;
       }
 
-      setSyncProgress({ current: 2, total: 12, message: "步骤 1/2：拉取收藏夹..." });
+      setSyncProgress({ current: 2, total: 13, message: "步骤 1/2：拉取收藏夹..." });
       const foldersData = await downloadFile(config, DATA_FILES.favFolders);
       if (foldersData) {
         const items = JSON.parse(foldersData) as FavoriteFolder[];
@@ -293,7 +368,7 @@ const WebDavSync = () => {
         totalMerged += items.length;
       }
 
-      setSyncProgress({ current: 3, total: 12, message: "步骤 1/2：拉取收藏资源..." });
+      setSyncProgress({ current: 3, total: 13, message: "步骤 1/2：拉取收藏资源..." });
       const resourcesData = await downloadFile(config, DATA_FILES.favResources);
       if (resourcesData) {
         const items = JSON.parse(resourcesData) as FavoriteResource[];
@@ -302,7 +377,7 @@ const WebDavSync = () => {
         totalSkipped += result.skipped;
       }
 
-      setSyncProgress({ current: 4, total: 12, message: "步骤 1/2：拉取订阅合集..." });
+      setSyncProgress({ current: 4, total: 13, message: "步骤 1/2：拉取订阅合集..." });
       const collectionsData = await downloadFile(config, DATA_FILES.subscribedCollections);
       if (collectionsData) {
         const items = JSON.parse(collectionsData) as SubscribedCollection[];
@@ -310,7 +385,7 @@ const WebDavSync = () => {
         totalMerged += items.length;
       }
 
-      setSyncProgress({ current: 5, total: 12, message: "步骤 1/2：拉取合集视频..." });
+      setSyncProgress({ current: 5, total: 13, message: "步骤 1/2：拉取合集视频..." });
       const collectionResourcesData = await downloadFile(
         config,
         DATA_FILES.subscribedCollectionResources,
@@ -323,22 +398,22 @@ const WebDavSync = () => {
       }
 
       // 第二步：推送合并后的最新数据
-      setSyncProgress({ current: 6, total: 12, message: "步骤 2/2：推送历史记录..." });
+      setSyncProgress({ current: 6, total: 13, message: "步骤 2/2：推送历史记录..." });
       const history = await getAllHistory();
       const historyOk = await uploadFile(config, DATA_FILES.history, JSON.stringify(history));
       if (!historyOk) throw new Error("上传历史记录失败");
 
-      setSyncProgress({ current: 7, total: 12, message: "步骤 2/2：推送喜欢的音乐..." });
+      setSyncProgress({ current: 7, total: 13, message: "步骤 2/2：推送喜欢的音乐..." });
       const music = await getAllLikedMusic();
       const musicOk = await uploadFile(config, DATA_FILES.likedMusic, JSON.stringify(music));
       if (!musicOk) throw new Error("上传音乐失败");
 
-      setSyncProgress({ current: 8, total: 12, message: "步骤 2/2：推送收藏夹..." });
+      setSyncProgress({ current: 8, total: 13, message: "步骤 2/2：推送收藏夹..." });
       const folders = await getAllFavFolders();
       const foldersOk = await uploadFile(config, DATA_FILES.favFolders, JSON.stringify(folders));
       if (!foldersOk) throw new Error("上传收藏夹失败");
 
-      setSyncProgress({ current: 9, total: 12, message: "步骤 2/2：推送收藏资源..." });
+      setSyncProgress({ current: 9, total: 13, message: "步骤 2/2：推送收藏资源..." });
       const resources = await getAllFavResources();
       const resourcesOk = await uploadFile(
         config,
@@ -347,7 +422,7 @@ const WebDavSync = () => {
       );
       if (!resourcesOk) throw new Error("上传收藏资源失败");
 
-      setSyncProgress({ current: 10, total: 12, message: "步骤 2/2：推送订阅合集..." });
+      setSyncProgress({ current: 10, total: 13, message: "步骤 2/2：推送订阅合集..." });
       const collections = await getAllSubscribedCollections();
       const collectionsOk = await uploadFile(
         config,
@@ -356,7 +431,7 @@ const WebDavSync = () => {
       );
       if (!collectionsOk) throw new Error("上传订阅合集失败");
 
-      setSyncProgress({ current: 11, total: 12, message: "步骤 2/2：推送合集视频..." });
+      setSyncProgress({ current: 11, total: 13, message: "步骤 2/2：推送合集视频..." });
       const collectionResources = await getAllSubscribedCollectionResources();
       const collectionResourcesOk = await uploadFile(
         config,
@@ -365,11 +440,16 @@ const WebDavSync = () => {
       );
       if (!collectionResourcesOk) throw new Error("上传合集视频失败");
 
+      if (shouldUploadPreferences) {
+        setSyncProgress({ current: 12, total: 13, message: "步骤 2/2：推送偏好设置..." });
+        await uploadPreferences();
+      }
+
       const now = Date.now();
       await setStorageValue(WEBDAV_LAST_SYNC, now);
       setLastSync(now);
 
-      setSyncProgress({ current: 12, total: 12, message: "双向同步完成！" });
+      setSyncProgress({ current: 13, total: 13, message: "双向同步完成！" });
       toast.success(
         `双向同步完成！合并 ${totalMerged} 条，跳过 ${totalSkipped} 条，推送 ${history.length + music.length + folders.length + resources.length + collections.length + collectionResources.length} 条`,
       );
@@ -391,14 +471,19 @@ const WebDavSync = () => {
     }
 
     setIsRestoring(true);
-    setSyncProgress({ current: 0, total: 6, message: "正在从 WebDAV 下载数据..." });
+    setSyncProgress({ current: 0, total: 7, message: "正在从 WebDAV 下载数据..." });
 
     try {
+      if (!(await testConnection(config))) {
+        throw new Error("无法连接 WebDAV，请检查服务器地址和凭证");
+      }
+      await setStorageValue(WEBDAV_CONFIG, config);
+
       let totalMerged = 0;
       let totalSkipped = 0;
 
       // 1. 恢复历史记录
-      setSyncProgress({ current: 0, total: 6, message: "正在恢复历史记录..." });
+      setSyncProgress({ current: 0, total: 7, message: "正在恢复历史记录..." });
       const historyData = await downloadFile(config, DATA_FILES.history);
       if (historyData) {
         const items = JSON.parse(historyData) as HistoryItem[];
@@ -408,7 +493,7 @@ const WebDavSync = () => {
       }
 
       // 2. 恢复喜欢的音乐
-      setSyncProgress({ current: 1, total: 6, message: "正在恢复喜欢的音乐..." });
+      setSyncProgress({ current: 1, total: 7, message: "正在恢复喜欢的音乐..." });
       const musicData = await downloadFile(config, DATA_FILES.likedMusic);
       if (musicData) {
         const items = JSON.parse(musicData) as LikedMusic[];
@@ -418,7 +503,7 @@ const WebDavSync = () => {
       }
 
       // 3. 恢复收藏夹（直接 upsert，无时间戳比对）
-      setSyncProgress({ current: 2, total: 6, message: "正在恢复收藏夹..." });
+      setSyncProgress({ current: 2, total: 7, message: "正在恢复收藏夹..." });
       const foldersData = await downloadFile(config, DATA_FILES.favFolders);
       if (foldersData) {
         const items = JSON.parse(foldersData) as FavoriteFolder[];
@@ -427,7 +512,7 @@ const WebDavSync = () => {
       }
 
       // 4. 恢复收藏资源
-      setSyncProgress({ current: 3, total: 6, message: "正在恢复收藏资源..." });
+      setSyncProgress({ current: 3, total: 7, message: "正在恢复收藏资源..." });
       const resourcesData = await downloadFile(config, DATA_FILES.favResources);
       if (resourcesData) {
         const items = JSON.parse(resourcesData) as FavoriteResource[];
@@ -437,7 +522,7 @@ const WebDavSync = () => {
       }
 
       // 5. 恢复订阅合集
-      setSyncProgress({ current: 4, total: 6, message: "正在恢复订阅合集..." });
+      setSyncProgress({ current: 4, total: 7, message: "正在恢复订阅合集..." });
       const collectionsData = await downloadFile(config, DATA_FILES.subscribedCollections);
       if (collectionsData) {
         const items = JSON.parse(collectionsData) as SubscribedCollection[];
@@ -446,7 +531,7 @@ const WebDavSync = () => {
       }
 
       // 6. 恢复订阅合集视频
-      setSyncProgress({ current: 5, total: 6, message: "正在恢复合集视频..." });
+      setSyncProgress({ current: 5, total: 7, message: "正在恢复合集视频..." });
       const collectionResourcesData = await downloadFile(
         config,
         DATA_FILES.subscribedCollectionResources,
@@ -458,13 +543,35 @@ const WebDavSync = () => {
         totalSkipped += result.skipped;
       }
 
+      setSyncProgress({ current: 6, total: 7, message: "正在检查偏好设置..." });
+      const remotePreferences = await readRemotePreferences();
+      if (remotePreferences.preferences) {
+        const shouldApply = await requestPreferencesDecision(remotePreferences.preferences);
+        if (shouldApply) {
+          await applySyncedPreferences(remotePreferences.preferences);
+          toast.success("已应用远端偏好设置");
+        }
+      }
+
       // 记录同步时间
       const now = Date.now();
       await setStorageValue(WEBDAV_LAST_SYNC, now);
       setLastSync(now);
 
-      setSyncProgress({ current: 6, total: 6, message: "恢复完成！" });
+      if (isOnboarding) {
+        // 云端备份作为本机的完整基线，后续 B 站同步从增量模式开始。
+        await Promise.all([
+          setStorageValue(HAS_FULL_SYNC, true),
+          setStorageValue(HAS_FULL_FAV_SYNC, true),
+          setStorageValue(INITIAL_SETUP_COMPLETED, true),
+        ]);
+      }
+
+      setSyncProgress({ current: 7, total: 7, message: "恢复完成！" });
       toast.success(`恢复完成！合并 ${totalMerged} 条，跳过 ${totalSkipped} 条（本地更新）`);
+      if (isOnboarding) {
+        window.location.replace(browser.runtime.getURL("/my-history.html"));
+      }
     } catch (error: any) {
       console.error("WebDAV 恢复失败:", error);
       toast.error(error.message || "恢复失败，请检查配置");
@@ -645,9 +752,23 @@ const WebDavSync = () => {
 
   return (
     <div className="max-w-[800px] mx-auto p-6 pb-20 min-h-screen bg-gray-50/30 dark:bg-[#0a0a0a] text-gray-900 dark:text-neutral-100">
-      <h1 className="text-3xl font-bold mb-2">WebDAV 同步</h1>
+      {isOnboarding && (
+        <button
+          type="button"
+          onClick={() => navigate("/welcome")}
+          className="mb-6 inline-flex items-center gap-2 text-sm font-medium text-gray-500 transition hover:text-gray-900 dark:text-neutral-400 dark:hover:text-white"
+        >
+          <ArrowLeft className="h-4 w-4" />
+          返回选择数据来源
+        </button>
+      )}
+      <h1 className="text-3xl font-bold mb-2">
+        {isOnboarding ? "配置 WebDAV 并恢复" : "WebDAV 同步"}
+      </h1>
       <p className="text-gray-500 dark:text-neutral-400 text-sm mb-8">
-        通过 WebDAV 或手动导出/导入来备份和恢复你的数据。
+        {isOnboarding
+          ? "连接你的 WebDAV 服务并拉取已有云端数据。完成前不会请求 B 站接口。"
+          : "通过 WebDAV 或手动导出/导入来备份和恢复你的数据。"}
       </p>
 
       {/* ===== WebDAV 配置区域 ===== */}
@@ -815,22 +936,24 @@ const WebDavSync = () => {
             </div>
           )}
 
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            <button
-              onClick={() => setShowBackupDialog(true)}
-              disabled={isBackingUp || isRestoring || !config.serverUrl}
-              className="flex items-center justify-center gap-2 px-5 py-3 bg-emerald-500 hover:bg-emerald-600 text-white font-medium rounded-lg shadow-md hover:shadow-lg transition-all transform hover:scale-[1.02] disabled:opacity-50 disabled:cursor-not-allowed disabled:transform-none"
-            >
-              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  strokeWidth={2}
-                  d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M9 19l3-3m0 0l3 3m-3-3v12"
-                />
-              </svg>
-              {isBackingUp ? "备份中..." : "备份到 WebDAV"}
-            </button>
+          <div className={`grid grid-cols-1 gap-4 ${isOnboarding ? "" : "sm:grid-cols-2"}`}>
+            {!isOnboarding && (
+              <button
+                onClick={() => setShowBackupDialog(true)}
+                disabled={isBackingUp || isRestoring || !config.serverUrl}
+                className="flex items-center justify-center gap-2 px-5 py-3 bg-emerald-500 hover:bg-emerald-600 text-white font-medium rounded-lg shadow-md hover:shadow-lg transition-all transform hover:scale-[1.02] disabled:opacity-50 disabled:cursor-not-allowed disabled:transform-none"
+              >
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth={2}
+                    d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M9 19l3-3m0 0l3 3m-3-3v12"
+                  />
+                </svg>
+                {isBackingUp ? "备份中..." : "备份到 WebDAV"}
+              </button>
+            )}
 
             <button
               onClick={handleRestore}
@@ -845,7 +968,11 @@ const WebDavSync = () => {
                   d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3 3m0 0l-3-3m3 3V8"
                 />
               </svg>
-              {isRestoring ? "恢复中..." : "从 WebDAV 恢复"}
+              {isRestoring
+                ? "正在拉取云端数据..."
+                : isOnboarding
+                  ? "保存配置并拉取云端数据"
+                  : "从 WebDAV 恢复"}
             </button>
           </div>
 
@@ -859,7 +986,9 @@ const WebDavSync = () => {
       </div>
 
       {/* ===== 自动同步设置区域 ===== */}
-      <div className="mb-8 rounded-xl bg-white dark:bg-neutral-900 shadow-sm border border-gray-100 dark:border-neutral-800 overflow-hidden">
+      <div
+        className={`${isOnboarding ? "hidden" : ""} mb-8 rounded-xl bg-white dark:bg-neutral-900 shadow-sm border border-gray-100 dark:border-neutral-800 overflow-hidden`}
+      >
         <div className="p-5 border-b border-gray-100 dark:border-neutral-800 bg-gradient-to-r from-orange-50 to-amber-50 dark:from-orange-500/10 dark:to-amber-500/10">
           <h2 className="text-lg font-bold text-gray-800 dark:text-neutral-100 flex items-center gap-2">
             <svg
@@ -941,7 +1070,9 @@ const WebDavSync = () => {
       </div>
 
       {/* ===== 手动导出/导入区域 ===== */}
-      <div className="mb-8 rounded-xl bg-white dark:bg-neutral-900 shadow-sm border border-gray-100 dark:border-neutral-800 overflow-hidden">
+      <div
+        className={`${isOnboarding ? "hidden" : ""} mb-8 rounded-xl bg-white dark:bg-neutral-900 shadow-sm border border-gray-100 dark:border-neutral-800 overflow-hidden`}
+      >
         <div className="p-5 border-b border-gray-100 dark:border-neutral-800 bg-gradient-to-r from-purple-50 to-fuchsia-50 dark:from-purple-500/10 dark:to-fuchsia-500/10">
           <h2 className="text-lg font-bold text-gray-800 dark:text-neutral-100 flex items-center gap-2">
             <svg
@@ -1010,7 +1141,9 @@ const WebDavSync = () => {
       </div>
 
       {/* ===== 使用说明 ===== */}
-      <div className="rounded-xl bg-gray-50 dark:bg-neutral-900 border border-gray-200 dark:border-neutral-800 p-5">
+      <div
+        className={`${isOnboarding ? "hidden" : ""} rounded-xl bg-gray-50 dark:bg-neutral-900 border border-gray-200 dark:border-neutral-800 p-5`}
+      >
         <h3 className="text-base font-semibold mb-3 text-gray-800 dark:text-neutral-100">
           使用说明
         </h3>
@@ -1043,7 +1176,7 @@ const WebDavSync = () => {
       </div>
 
       {/* ===== 备份模式选择对话框 ===== */}
-      {showBackupDialog && (
+      {!isOnboarding && showBackupDialog && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm">
           <div className="bg-white dark:bg-neutral-900 rounded-2xl shadow-2xl max-w-md w-full mx-4 overflow-hidden animate-in fade-in zoom-in-95 border border-transparent dark:border-neutral-800">
             <div className="p-6 border-b border-gray-100 dark:border-neutral-800">
@@ -1127,6 +1260,32 @@ const WebDavSync = () => {
           </div>
         </div>
       )}
+
+      <ActionDialog
+        isOpen={Boolean(pendingPreferences)}
+        title="应用远端偏好设置？"
+        description="检测到 WebDAV 中保存的主题、隐藏菜单和视频点击行为。应用后会覆盖本机这三项设置。"
+        confirmLabel="应用配置"
+        onClose={() => resolvePreferencesDecision(false)}
+        onConfirm={() => resolvePreferencesDecision(true)}
+      >
+        {pendingPreferences && (
+          <div className="rounded-xl bg-gray-50 p-4 text-sm text-gray-600 dark:bg-neutral-800 dark:text-neutral-300">
+            <p>主题：{pendingPreferences.theme === "dark" ? "深色" : "浅色"}</p>
+            <p className="mt-2">隐藏菜单：{pendingPreferences.hiddenMenus.length} 项</p>
+            <p className="mt-2">
+              视频点击：历史记录
+              {pendingPreferences.videoClickModes.history === "player" ? "内置播放" : "跳转 B 站"}
+              ，收藏夹
+              {pendingPreferences.videoClickModes.favorites === "player" ? "内置播放" : "跳转 B 站"}
+              ，合集
+              {pendingPreferences.videoClickModes.collections === "player"
+                ? "内置播放"
+                : "跳转 B 站"}
+            </p>
+          </div>
+        )}
+      </ActionDialog>
     </div>
   );
 };
